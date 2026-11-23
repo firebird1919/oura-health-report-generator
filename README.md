@@ -93,6 +93,10 @@ tab (Sleep and Readiness score rings, vitals with risk dots, Needs Attention,
 a Stress & Recovery card, and the top two actions), with tabs for Resilience,
 Comparison, Trends, Notes, and Actions. Tabs are plain HTML/CSS/JS in the
 single output file — no server needed — and printing shows all sections.
+The Summary, Comparison, and Trends tabs each carry the same **Period**
+selector as the Resilience section (Latest / All data / Week N), recomputing
+their rings, vitals, comparison table, band distribution, and trend charts
+per period; Notes and Actions always use the full window.
 
 The report is framed around **health resilience** (Lu MC, keynote on Health
 Resilience, Taiwan, November 2026 — see the report's References). If a file

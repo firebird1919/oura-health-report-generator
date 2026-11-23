@@ -541,7 +541,7 @@ def _ring_svg(value, label: str) -> str:
 
 
 def summary_section(sleep_mean, readiness_mean, vitals, attention, stress14,
-                    top_actions, window_text: str) -> str:
+                    top_actions, window_text: str, n_days: int = 14) -> str:
     """Summary tab: score rings, vitals with risk dots, needs-attention,
     stress & recovery totals, and the top two actions (mirrors the app)."""
     lvl_color = {'green': '#2f9e44', 'yellow': '#d9930d', 'red': '#e03131'}
@@ -561,7 +561,7 @@ def summary_section(sleep_mean, readiness_mean, vitals, attention, stress14,
         chip = f' · Latest day 最新一日：{last_label}' if last_label else ''
         stress_html = (f'<p style="font-size:14px">Stress total 壓力總時數 <b>{tot_s / 60:.1f} h</b> · '
                        f'Recovery total 恢復總時數 <b>{tot_r / 60:.1f} h</b><br/>'
-                       f'Daily average 每日平均：stress {tot_s / 14:.0f} min · recovery {tot_r / 14:.0f} min{chip}</p>')
+                       f'Daily average 每日平均：stress {tot_s / n_days:.0f} min · recovery {tot_r / n_days:.0f} min{chip}</p>')
     else:
         stress_html = '<p class="muted">Not enough daily stress data in this window. 本區間每日壓力資料不足。</p>'
     if top_actions:
@@ -684,232 +684,316 @@ def main() -> None:
     if 'spo2_percentage' in dailyspo2.columns:
         dailyspo2['spo2_avg'] = to_num(dailyspo2['spo2_percentage'].apply(lambda x: (parse_json_field(x) or {}).get('average')))
 
-    # Derived series
-    nightly_hr = sleepmodel.loc[sleepmodel.get('average_heart_rate', pd.Series(dtype=float)) > 0, 'average_heart_rate'] if 'average_heart_rate' in sleepmodel.columns else pd.Series(dtype=float)
-    main_sleep_hours = pd.Series(dtype=float)
-    if 'total_sleep_duration' in sleepmodel.columns:
-        main_sleep_hours = (sleepmodel.loc[sleepmodel['total_sleep_duration'] >= 10800, 'total_sleep_duration'] / 3600.0).dropna()
+    # Per-view computation (extracted from the original main flow so the
+    # Summary / Comparison / Trends tabs can each be re-rendered per period.
+    # The full-data view below is computed exactly as before.)
+    def compute_view(dailyactivity, dailysleep, readiness, dailyspo2, dailystress, sleepmodel):
+        # Derived series
+        nightly_hr = sleepmodel.loc[sleepmodel.get('average_heart_rate', pd.Series(dtype=float)) > 0, 'average_heart_rate'] if 'average_heart_rate' in sleepmodel.columns else pd.Series(dtype=float)
+        main_sleep_hours = pd.Series(dtype=float)
+        if 'total_sleep_duration' in sleepmodel.columns:
+            main_sleep_hours = (sleepmodel.loc[sleepmodel['total_sleep_duration'] >= 10800, 'total_sleep_duration'] / 3600.0).dropna()
 
-    sp_steps = profile(dailyactivity['steps']) if 'steps' in dailyactivity.columns else {}
-    sp_sleep_score = profile(dailysleep['score']) if 'score' in dailysleep.columns else {}
-    sp_readiness = profile(readiness['score']) if 'score' in readiness.columns else {}
-    sp_activity_score = profile(dailyactivity['score']) if 'score' in dailyactivity.columns else {}
-    sp_spo2 = profile(dailyspo2['spo2_avg']) if 'spo2_avg' in dailyspo2.columns else {}
-    sp_nightly_hr = profile(nightly_hr)
-    sp_temp_dev = profile(readiness['temperature_deviation']) if 'temperature_deviation' in readiness.columns else {}
-    sp_sleep_hours = profile(main_sleep_hours)
+        sp_steps = profile(dailyactivity['steps']) if 'steps' in dailyactivity.columns else {}
+        sp_sleep_score = profile(dailysleep['score']) if 'score' in dailysleep.columns else {}
+        sp_readiness = profile(readiness['score']) if 'score' in readiness.columns else {}
+        sp_activity_score = profile(dailyactivity['score']) if 'score' in dailyactivity.columns else {}
+        sp_spo2 = profile(dailyspo2['spo2_avg']) if 'spo2_avg' in dailyspo2.columns else {}
+        sp_nightly_hr = profile(nightly_hr)
+        sp_temp_dev = profile(readiness['temperature_deviation']) if 'temperature_deviation' in readiness.columns else {}
+        sp_sleep_hours = profile(main_sleep_hours)
 
-    # Out-of-range rates
-    sleep_under7 = float((main_sleep_hours < 7).mean() * 100) if not main_sleep_hours.empty else math.nan
-    spo2_below95 = float((dailyspo2['spo2_avg'] < 95).mean() * 100) if 'spo2_avg' in dailyspo2.columns and not dailyspo2['spo2_avg'].dropna().empty else math.nan
-    nightly_hr_out = float(((nightly_hr < 60) | (nightly_hr > 100)).mean() * 100) if not nightly_hr.empty else math.nan
-    temp_dev_over = float((readiness['temperature_deviation'].abs() > 0.5).mean() * 100) if 'temperature_deviation' in readiness.columns and not readiness['temperature_deviation'].dropna().empty else math.nan
+        # Out-of-range rates
+        sleep_under7 = float((main_sleep_hours < 7).mean() * 100) if not main_sleep_hours.empty else math.nan
+        spo2_below95 = float((dailyspo2['spo2_avg'] < 95).mean() * 100) if 'spo2_avg' in dailyspo2.columns and not dailyspo2['spo2_avg'].dropna().empty else math.nan
+        nightly_hr_out = float(((nightly_hr < 60) | (nightly_hr > 100)).mean() * 100) if not nightly_hr.empty else math.nan
+        temp_dev_over = float((readiness['temperature_deviation'].abs() > 0.5).mean() * 100) if 'temperature_deviation' in readiness.columns and not readiness['temperature_deviation'].dropna().empty else math.nan
 
-    # Score band distributions (Oura 0-100 bands)
-    def band_counts(s: pd.Series) -> dict[str, int]:
-        x = to_num(s).dropna()
-        return {
-            'Optimal (85-100)': int((x >= 85).sum()),
-            'Good (70-84)': int(((x >= 70) & (x <= 84)).sum()),
-            'Fair (60-69)': int(((x >= 60) & (x <= 69)).sum()),
-            'Pay attention (0-59)': int((x <= 59).sum()),
-            'Total days': int(x.shape[0]),
-        }
+        # Score band distributions (Oura 0-100 bands)
+        def band_counts(s: pd.Series) -> dict[str, int]:
+            x = to_num(s).dropna()
+            return {
+                'Optimal (85-100)': int((x >= 85).sum()),
+                'Good (70-84)': int(((x >= 70) & (x <= 84)).sum()),
+                'Fair (60-69)': int(((x >= 60) & (x <= 69)).sum()),
+                'Pay attention (0-59)': int((x <= 59).sum()),
+                'Total days': int(x.shape[0]),
+            }
 
-    band_rows = []
-    if 'score' in dailyactivity.columns:
-        b = band_counts(dailyactivity['score'])
-        b['Score Type'] = 'Activity Score / 活動分數'
-        band_rows.append(b)
-    if 'score' in dailysleep.columns:
-        b = band_counts(dailysleep['score'])
-        b['Score Type'] = 'Sleep Score / 睡眠分數'
-        band_rows.append(b)
-    if 'score' in readiness.columns:
-        b = band_counts(readiness['score'])
-        b['Score Type'] = 'Readiness Score / 準備度分數'
-        band_rows.append(b)
-    bands_df = pd.DataFrame(band_rows)
-    if not bands_df.empty:
-        bands_df = bands_df[['Score Type', 'Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)', 'Total days']]
-        format_cols = ['Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)', 'Total days']
-        score_cols = ['Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)']
-        bands_df[format_cols] = bands_df[format_cols].astype(object)
-        for _, row in bands_df.iterrows():
-            total = row['Total days'] if row['Total days'] else 0
-            score_pcts: dict[str, float] = {}
-            for col in format_cols:
-                count = int(row[col])
-                pct = (count / total * 100.0) if total else 0.0
-                bands_df.loc[row.name, col] = f"{count} ({pct:.1f}%)"
-                if col in score_cols:
-                    score_pcts[col] = pct
-            if score_pcts:
-                max_col = max(score_pcts, key=score_pcts.get)
-                if max_col == 'Pay attention (0-59)':
-                    bands_df.loc[row.name, max_col] = f'<span class=\"pink-love\">{bands_df.loc[row.name, max_col]}</span>'
-                elif max_col in ['Good (70-84)', 'Optimal (85-100)']:
-                    bands_df.loc[row.name, max_col] = f'<span class=\"good\">{bands_df.loc[row.name, max_col]}</span>'
+        band_rows = []
+        if 'score' in dailyactivity.columns:
+            b = band_counts(dailyactivity['score'])
+            b['Score Type'] = 'Activity Score / 活動分數'
+            band_rows.append(b)
+        if 'score' in dailysleep.columns:
+            b = band_counts(dailysleep['score'])
+            b['Score Type'] = 'Sleep Score / 睡眠分數'
+            band_rows.append(b)
+        if 'score' in readiness.columns:
+            b = band_counts(readiness['score'])
+            b['Score Type'] = 'Readiness Score / 準備度分數'
+            band_rows.append(b)
+        bands_df = pd.DataFrame(band_rows)
+        if not bands_df.empty:
+            bands_df = bands_df[['Score Type', 'Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)', 'Total days']]
+            format_cols = ['Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)', 'Total days']
+            score_cols = ['Optimal (85-100)', 'Good (70-84)', 'Fair (60-69)', 'Pay attention (0-59)']
+            bands_df[format_cols] = bands_df[format_cols].astype(object)
+            for _, row in bands_df.iterrows():
+                total = row['Total days'] if row['Total days'] else 0
+                score_pcts: dict[str, float] = {}
+                for col in format_cols:
+                    count = int(row[col])
+                    pct = (count / total * 100.0) if total else 0.0
+                    bands_df.loc[row.name, col] = f"{count} ({pct:.1f}%)"
+                    if col in score_cols:
+                        score_pcts[col] = pct
+                if score_pcts:
+                    max_col = max(score_pcts, key=score_pcts.get)
+                    if max_col == 'Pay attention (0-59)':
+                        bands_df.loc[row.name, max_col] = f'<span class=\"pink-love\">{bands_df.loc[row.name, max_col]}</span>'
+                    elif max_col in ['Good (70-84)', 'Optimal (85-100)']:
+                        bands_df.loc[row.name, max_col] = f'<span class=\"good\">{bands_df.loc[row.name, max_col]}</span>'
 
-    # Preventive comparison table (general healthy standards + your data snapshot)
-    sleep_mean = sp_sleep_hours.get('mean')
-    hr_mean = sp_nightly_hr.get('mean')
-    spo2_mean = sp_spo2.get('mean')
-    temp_mean = sp_temp_dev.get('mean')
-    sleep_score_mean = sp_sleep_score.get('mean')
-    readiness_mean = sp_readiness.get('mean')
-    steps_mean = sp_steps.get('mean')
+        # Preventive comparison table (general healthy standards + your data snapshot)
+        sleep_mean = sp_sleep_hours.get('mean')
+        hr_mean = sp_nightly_hr.get('mean')
+        spo2_mean = sp_spo2.get('mean')
+        temp_mean = sp_temp_dev.get('mean')
+        sleep_score_mean = sp_sleep_score.get('mean')
+        readiness_mean = sp_readiness.get('mean')
+        steps_mean = sp_steps.get('mean')
 
-    def risk_sleep() -> str:
-        if (sleep_mean is not None and sleep_mean < 6.5) or (not math.isnan(sleep_under7) and sleep_under7 >= 50):
-            return 'red'
-        if (sleep_mean is not None and sleep_mean < 7.0) or (not math.isnan(sleep_under7) and sleep_under7 >= 30):
-            return 'yellow'
-        return 'green'
+        def risk_sleep() -> str:
+            if (sleep_mean is not None and sleep_mean < 6.5) or (not math.isnan(sleep_under7) and sleep_under7 >= 50):
+                return 'red'
+            if (sleep_mean is not None and sleep_mean < 7.0) or (not math.isnan(sleep_under7) and sleep_under7 >= 30):
+                return 'yellow'
+            return 'green'
 
-    def risk_hr() -> str:
-        if (hr_mean is not None and (hr_mean < 60 or hr_mean > 100)) or (not math.isnan(nightly_hr_out) and nightly_hr_out >= 20):
-            return 'red'
-        if not math.isnan(nightly_hr_out) and nightly_hr_out >= 10:
-            return 'yellow'
-        return 'green'
+        def risk_hr() -> str:
+            if (hr_mean is not None and (hr_mean < 60 or hr_mean > 100)) or (not math.isnan(nightly_hr_out) and nightly_hr_out >= 20):
+                return 'red'
+            if not math.isnan(nightly_hr_out) and nightly_hr_out >= 10:
+                return 'yellow'
+            return 'green'
 
-    def risk_spo2() -> str:
-        if (spo2_mean is not None and spo2_mean < 94.0) or (not math.isnan(spo2_below95) and spo2_below95 >= 10):
-            return 'red'
-        if (spo2_mean is not None and spo2_mean < 95.0) or (not math.isnan(spo2_below95) and spo2_below95 >= 3):
-            return 'yellow'
-        return 'green'
+        def risk_spo2() -> str:
+            if (spo2_mean is not None and spo2_mean < 94.0) or (not math.isnan(spo2_below95) and spo2_below95 >= 10):
+                return 'red'
+            if (spo2_mean is not None and spo2_mean < 95.0) or (not math.isnan(spo2_below95) and spo2_below95 >= 3):
+                return 'yellow'
+            return 'green'
 
-    def risk_temp() -> str:
-        if (temp_mean is not None and abs(temp_mean) > 0.5) or (not math.isnan(temp_dev_over) and temp_dev_over >= 35):
-            return 'red'
-        if (temp_mean is not None and abs(temp_mean) > 0.3) or (not math.isnan(temp_dev_over) and temp_dev_over >= 20):
-            return 'yellow'
-        return 'green'
+        def risk_temp() -> str:
+            if (temp_mean is not None and abs(temp_mean) > 0.5) or (not math.isnan(temp_dev_over) and temp_dev_over >= 35):
+                return 'red'
+            if (temp_mean is not None and abs(temp_mean) > 0.3) or (not math.isnan(temp_dev_over) and temp_dev_over >= 20):
+                return 'yellow'
+            return 'green'
 
-    def risk_sleep_score() -> str:
-        if sleep_score_mean is not None and sleep_score_mean < 60:
-            return 'red'
-        if sleep_score_mean is not None and sleep_score_mean < 70:
-            return 'yellow'
-        return 'green'
+        def risk_sleep_score() -> str:
+            if sleep_score_mean is not None and sleep_score_mean < 60:
+                return 'red'
+            if sleep_score_mean is not None and sleep_score_mean < 70:
+                return 'yellow'
+            return 'green'
 
-    def risk_readiness() -> str:
-        if readiness_mean is not None and readiness_mean < 60:
-            return 'red'
-        if readiness_mean is not None and readiness_mean < 70:
-            return 'yellow'
-        return 'green'
+        def risk_readiness() -> str:
+            if readiness_mean is not None and readiness_mean < 60:
+                return 'red'
+            if readiness_mean is not None and readiness_mean < 70:
+                return 'yellow'
+            return 'green'
 
-    def risk_steps() -> str:
-        low5000 = float((to_num(dailyactivity['steps']).dropna() < 5000).mean() * 100) if 'steps' in dailyactivity.columns and not to_num(dailyactivity['steps']).dropna().empty else math.nan
-        if (steps_mean is not None and steps_mean < 4000) or (not math.isnan(low5000) and low5000 >= 60):
-            return 'red'
-        if (steps_mean is not None and steps_mean < 7000) or (not math.isnan(low5000) and low5000 >= 40):
-            return 'yellow'
-        return 'green'
+        def risk_steps() -> str:
+            low5000 = float((to_num(dailyactivity['steps']).dropna() < 5000).mean() * 100) if 'steps' in dailyactivity.columns and not to_num(dailyactivity['steps']).dropna().empty else math.nan
+            if (steps_mean is not None and steps_mean < 4000) or (not math.isnan(low5000) and low5000 >= 60):
+                return 'red'
+            if (steps_mean is not None and steps_mean < 7000) or (not math.isnan(low5000) and low5000 >= 40):
+                return 'yellow'
+            return 'green'
 
-    sleep_level = risk_sleep()
-    hr_level = risk_hr()
-    spo2_level = risk_spo2()
-    temp_level = risk_temp()
-    sleep_score_level = risk_sleep_score()
-    readiness_level = risk_readiness()
-    steps_level = risk_steps()
+        sleep_level = risk_sleep()
+        hr_level = risk_hr()
+        spo2_level = risk_spo2()
+        temp_level = risk_temp()
+        sleep_score_level = risk_sleep_score()
+        readiness_level = risk_readiness()
+        steps_level = risk_steps()
 
-    def lvl_text(level: str) -> str:
-        if level == 'red':
-            return 'High / 高'
-        if level == 'yellow':
-            return 'Moderate / 中'
-        return 'Low / 低'
+        def lvl_text(level: str) -> str:
+            if level == 'red':
+                return 'High / 高'
+            if level == 'yellow':
+                return 'Moderate / 中'
+            return 'Low / 低'
 
-    compare_rows = [
-        {
-            'Metric<br>指標': 'Main sleep duration<br>主要睡眠時數',
-            'Risk level': risk_badge(sleep_level),
-            'Unit': 'hours/night',
-            'Your mean': color_text(sleep_level, fmt(sp_sleep_hours.get('mean'), 2)),
-            'Your data spread': fmt_profile(sp_sleep_hours, 2),
-            'Healthy population standard': 'Adults commonly need 7-9 h/night; minimum target >=7 h (CDC)',
-            'Guideline / target': 'CDC sleep duration guidance',
-            'Out-of-range rate': color_text(sleep_level, f"{sleep_under7:.1f}% nights < 7 h") if not math.isnan(sleep_under7) else 'N/A',
-            'Easy interpretation': 'Most preventive benefit is when sleep is regularly at or above 7 hours.'
-        },
-        {
-            'Metric<br>指標': 'Night average heart rate<br>夜間平均心率',
-            'Risk level': risk_badge(hr_level),
-            'Unit': 'bpm',
-            'Your mean': color_text(hr_level, fmt(sp_nightly_hr.get('mean'), 1)),
-            'Your data spread': fmt_profile(sp_nightly_hr, 1),
-            'Healthy population standard': 'General resting HR range: 60-100 bpm (lower can be normal in fit adults)',
-            'Guideline / target': 'AHA resting heart-rate reference',
-            'Out-of-range rate': color_text(hr_level, f"{nightly_hr_out:.1f}% nights outside 60-100") if not math.isnan(nightly_hr_out) else 'N/A',
-            'Easy interpretation': 'Your sleep HR is mostly in normal resting range; track trend changes, not one-day spikes.'
-        },
-        {
-            'Metric<br>指標': 'Blood oxygen (SpO2)<br>血氧',
-            'Risk level': risk_badge(spo2_level),
-            'Unit': '%',
-            'Your mean': color_text(spo2_level, fmt(sp_spo2.get('mean'), 2)),
-            'Your data spread': fmt_profile(sp_spo2, 2),
-            'Healthy population standard': 'Pulse oximetry normal range: about 95%-100%',
-            'Guideline / target': 'MedlinePlus pulse-ox reference',
-            'Out-of-range rate': color_text(spo2_level, f"{spo2_below95:.1f}% days < 95%") if not math.isnan(spo2_below95) else 'N/A',
-            'Easy interpretation': 'Values are generally within the common normal pulse-ox range.'
-        },
-        {
-            'Metric<br>指標': 'Temperature deviation<br>體溫偏差',
-            'Risk level': risk_badge(temp_level),
-            'Unit': 'degC deviation',
-            'Your mean': color_text(temp_level, fmt(sp_temp_dev.get('mean'), 2)),
-            'Your data spread': fmt_profile(sp_temp_dev, 2),
-            'Healthy population standard': 'No single universal healthy range for wearable deviation metrics',
-            'Guideline / target': 'Use trend + symptoms; sustained upward shifts may indicate physiological stress',
-            'Out-of-range rate': color_text(temp_level, f"{temp_dev_over:.1f}% days with |deviation| > 0.5") if not math.isnan(temp_dev_over) else 'N/A',
-            'Easy interpretation': 'This is personal-trend based, not a fixed clinical thermometer range.'
-        },
-        {
-            'Metric<br>指標': 'Sleep score<br>睡眠分數',
-            'Risk level': risk_badge(sleep_score_level),
-            'Unit': '0-100',
-            'Your mean': color_text(sleep_score_level, fmt(sp_sleep_score.get('mean'), 1)),
-            'Your data spread': fmt_profile(sp_sleep_score, 1),
-            'Healthy population standard': 'Consumer wellness score (not a clinical diagnostic scale)',
-            'Guideline / target': 'Oura bands: 85-100 optimal; 70-84 good; 60-69 fair; <60 pay attention',
-            'Out-of-range rate': color_text(sleep_score_level, f"{float((to_num(dailysleep['score']).dropna() < 70).mean()*100):.1f}% days <70") if 'score' in dailysleep.columns and not to_num(dailysleep['score']).dropna().empty else 'N/A',
-            'Easy interpretation': 'Use sub-70 days as recovery warning days.'
-        },
-        {
-            'Metric<br>指標': 'Readiness score<br>準備度分數',
-            'Risk level': risk_badge(readiness_level),
-            'Unit': '0-100',
-            'Your mean': color_text(readiness_level, fmt(sp_readiness.get('mean'), 1)),
-            'Your data spread': fmt_profile(sp_readiness, 1),
-            'Healthy population standard': 'Consumer wellness score (not a clinical diagnostic scale)',
-            'Guideline / target': 'Oura bands: 85-100 optimal; 70-84 good; 60-69 fair; <60 pay attention',
-            'Out-of-range rate': color_text(readiness_level, f"{float((to_num(readiness['score']).dropna() < 70).mean()*100):.1f}% days <70") if 'score' in readiness.columns and not to_num(readiness['score']).dropna().empty else 'N/A',
-            'Easy interpretation': 'If readiness is low, consider reducing training load and improving sleep regularity.'
-        },
-        {
-            'Metric<br>指標': 'Daily steps<br>每日步數',
-            'Risk level': risk_badge(steps_level),
-            'Unit': 'steps/day',
-            'Your mean': color_text(steps_level, fmt(sp_steps.get('mean'), 0)),
-            'Your data spread': fmt_profile(sp_steps, 0),
-            'Healthy population standard': 'No universal step cutoff; active adults often aim for a stable daily walking routine',
-            'Guideline / target': 'Public-health target: >=150 min/week moderate activity (CDC)',
-            'Out-of-range rate': color_text(steps_level, f"{float((to_num(dailyactivity['steps']).dropna() < 5000).mean()*100):.1f}% days <5,000") if 'steps' in dailyactivity.columns and not to_num(dailyactivity['steps']).dropna().empty else 'N/A',
-            'Easy interpretation': 'More important than one cutoff: keep a stable weekly active pattern.'
-        },
-    ]
-    compare_df = pd.DataFrame(compare_rows)
+        compare_rows = [
+            {
+                'Metric<br>指標': 'Main sleep duration<br>主要睡眠時數',
+                'Risk level': risk_badge(sleep_level),
+                'Unit': 'hours/night',
+                'Your mean': color_text(sleep_level, fmt(sp_sleep_hours.get('mean'), 2)),
+                'Your data spread': fmt_profile(sp_sleep_hours, 2),
+                'Healthy population standard': 'Adults commonly need 7-9 h/night; minimum target >=7 h (CDC)',
+                'Guideline / target': 'CDC sleep duration guidance',
+                'Out-of-range rate': color_text(sleep_level, f"{sleep_under7:.1f}% nights < 7 h") if not math.isnan(sleep_under7) else 'N/A',
+                'Easy interpretation': 'Most preventive benefit is when sleep is regularly at or above 7 hours.'
+            },
+            {
+                'Metric<br>指標': 'Night average heart rate<br>夜間平均心率',
+                'Risk level': risk_badge(hr_level),
+                'Unit': 'bpm',
+                'Your mean': color_text(hr_level, fmt(sp_nightly_hr.get('mean'), 1)),
+                'Your data spread': fmt_profile(sp_nightly_hr, 1),
+                'Healthy population standard': 'General resting HR range: 60-100 bpm (lower can be normal in fit adults)',
+                'Guideline / target': 'AHA resting heart-rate reference',
+                'Out-of-range rate': color_text(hr_level, f"{nightly_hr_out:.1f}% nights outside 60-100") if not math.isnan(nightly_hr_out) else 'N/A',
+                'Easy interpretation': 'Your sleep HR is mostly in normal resting range; track trend changes, not one-day spikes.'
+            },
+            {
+                'Metric<br>指標': 'Blood oxygen (SpO2)<br>血氧',
+                'Risk level': risk_badge(spo2_level),
+                'Unit': '%',
+                'Your mean': color_text(spo2_level, fmt(sp_spo2.get('mean'), 2)),
+                'Your data spread': fmt_profile(sp_spo2, 2),
+                'Healthy population standard': 'Pulse oximetry normal range: about 95%-100%',
+                'Guideline / target': 'MedlinePlus pulse-ox reference',
+                'Out-of-range rate': color_text(spo2_level, f"{spo2_below95:.1f}% days < 95%") if not math.isnan(spo2_below95) else 'N/A',
+                'Easy interpretation': 'Values are generally within the common normal pulse-ox range.'
+            },
+            {
+                'Metric<br>指標': 'Temperature deviation<br>體溫偏差',
+                'Risk level': risk_badge(temp_level),
+                'Unit': 'degC deviation',
+                'Your mean': color_text(temp_level, fmt(sp_temp_dev.get('mean'), 2)),
+                'Your data spread': fmt_profile(sp_temp_dev, 2),
+                'Healthy population standard': 'No single universal healthy range for wearable deviation metrics',
+                'Guideline / target': 'Use trend + symptoms; sustained upward shifts may indicate physiological stress',
+                'Out-of-range rate': color_text(temp_level, f"{temp_dev_over:.1f}% days with |deviation| > 0.5") if not math.isnan(temp_dev_over) else 'N/A',
+                'Easy interpretation': 'This is personal-trend based, not a fixed clinical thermometer range.'
+            },
+            {
+                'Metric<br>指標': 'Sleep score<br>睡眠分數',
+                'Risk level': risk_badge(sleep_score_level),
+                'Unit': '0-100',
+                'Your mean': color_text(sleep_score_level, fmt(sp_sleep_score.get('mean'), 1)),
+                'Your data spread': fmt_profile(sp_sleep_score, 1),
+                'Healthy population standard': 'Consumer wellness score (not a clinical diagnostic scale)',
+                'Guideline / target': 'Oura bands: 85-100 optimal; 70-84 good; 60-69 fair; <60 pay attention',
+                'Out-of-range rate': color_text(sleep_score_level, f"{float((to_num(dailysleep['score']).dropna() < 70).mean()*100):.1f}% days <70") if 'score' in dailysleep.columns and not to_num(dailysleep['score']).dropna().empty else 'N/A',
+                'Easy interpretation': 'Use sub-70 days as recovery warning days.'
+            },
+            {
+                'Metric<br>指標': 'Readiness score<br>準備度分數',
+                'Risk level': risk_badge(readiness_level),
+                'Unit': '0-100',
+                'Your mean': color_text(readiness_level, fmt(sp_readiness.get('mean'), 1)),
+                'Your data spread': fmt_profile(sp_readiness, 1),
+                'Healthy population standard': 'Consumer wellness score (not a clinical diagnostic scale)',
+                'Guideline / target': 'Oura bands: 85-100 optimal; 70-84 good; 60-69 fair; <60 pay attention',
+                'Out-of-range rate': color_text(readiness_level, f"{float((to_num(readiness['score']).dropna() < 70).mean()*100):.1f}% days <70") if 'score' in readiness.columns and not to_num(readiness['score']).dropna().empty else 'N/A',
+                'Easy interpretation': 'If readiness is low, consider reducing training load and improving sleep regularity.'
+            },
+            {
+                'Metric<br>指標': 'Daily steps<br>每日步數',
+                'Risk level': risk_badge(steps_level),
+                'Unit': 'steps/day',
+                'Your mean': color_text(steps_level, fmt(sp_steps.get('mean'), 0)),
+                'Your data spread': fmt_profile(sp_steps, 0),
+                'Healthy population standard': 'No universal step cutoff; active adults often aim for a stable daily walking routine',
+                'Guideline / target': 'Public-health target: >=150 min/week moderate activity (CDC)',
+                'Out-of-range rate': color_text(steps_level, f"{float((to_num(dailyactivity['steps']).dropna() < 5000).mean()*100):.1f}% days <5,000") if 'steps' in dailyactivity.columns and not to_num(dailyactivity['steps']).dropna().empty else 'N/A',
+                'Easy interpretation': 'More important than one cutoff: keep a stable weekly active pattern.'
+            },
+        ]
+        compare_df = pd.DataFrame(compare_rows)
 
-    # Evidence-based medical inference and action plan
-    # Priority ranking rule:
-    # priority_score = medical_importance(1-5) + feasibility(1-5) + risk_weight
-    # risk_weight: High=3, Moderate=2, Low=1
+        # Evidence-based medical inference and action plan
+        # Priority ranking rule:
+        # priority_score = medical_importance(1-5) + feasibility(1-5) + risk_weight
+        # risk_weight: High=3, Moderate=2, Low=1
+        return {'sp_steps': sp_steps, 'sp_sleep_score': sp_sleep_score, 'sp_readiness': sp_readiness, 'sp_activity_score': sp_activity_score, 'sp_spo2': sp_spo2, 'sp_nightly_hr': sp_nightly_hr, 'sp_temp_dev': sp_temp_dev, 'sp_sleep_hours': sp_sleep_hours, 'sleep_under7': sleep_under7, 'spo2_below95': spo2_below95, 'nightly_hr_out': nightly_hr_out, 'temp_dev_over': temp_dev_over, 'bands_df': bands_df, 'compare_df': compare_df, 'sleep_level': sleep_level, 'hr_level': hr_level, 'spo2_level': spo2_level, 'temp_level': temp_level, 'sleep_score_level': sleep_score_level, 'readiness_level': readiness_level, 'steps_level': steps_level, 'lvl_text': lvl_text, 'nightly_hr': nightly_hr, 'sleep_mean': sleep_mean, 'hr_mean': hr_mean, 'spo2_mean': spo2_mean, 'temp_mean': temp_mean, 'sleep_score_mean': sleep_score_mean, 'readiness_mean': readiness_mean, 'steps_mean': steps_mean}
+    def build_charts(dailyactivity, dailysleep, readiness, dailyspo2, dailystress, daystress, heartrate, temperature, sleepmodel, suffix):
+        def save_chart_s(name, svg):
+            return save_chart((suffix + name) if suffix else name, svg)
+        # Trend charts
+        charts: list[tuple[str, str]] = []
+
+        def add_chart(df: pd.DataFrame, xcol: str, ycol: str, label: str, title: str, color: str, file: str):
+            if xcol in df.columns and ycol in df.columns:
+                d = df[[xcol, ycol]].dropna().sort_values(xcol)
+                if not d.empty:
+                    xs = [str(x)[:10] for x in d[xcol].tolist()]
+                    ys = [float(y) for y in d[ycol].tolist()]
+                    charts.append((label, save_chart_s(file, line_svg(xs, ys, title, color))))
+
+        add_chart(dailyactivity, 'day_dt', 'steps', 'Daily Steps / 每日步數', 'Daily Steps Trend', '#ff6b8b', 'steps.svg')
+        add_chart(dailysleep, 'day_dt', 'score', 'Sleep Score / 睡眠分數', 'Sleep Score Trend', '#5e60ce', 'sleep.svg')
+        add_chart(readiness, 'day_dt', 'score', 'Readiness Score / 準備度分數', 'Readiness Score Trend', '#2a9d8f', 'readiness.svg')
+
+        hr_daily = pd.DataFrame()
+        if 'ts' in heartrate.columns and 'bpm' in heartrate.columns:
+            hr_daily = heartrate.dropna(subset=['ts', 'bpm']).copy()
+            hr_daily['day_dt'] = hr_daily['ts'].dt.tz_convert('UTC').dt.date
+            hr_daily = hr_daily.groupby('day_dt', as_index=False)['bpm'].mean()
+        add_chart(hr_daily, 'day_dt', 'bpm', 'Heart Rate (Daily Avg) / 心率（日均）', 'Daily Average Heart Rate', '#e63946', 'heart.svg')
+
+        temp_daily = pd.DataFrame()
+        if 'ts' in temperature.columns and 'skin_temp' in temperature.columns:
+            temp_daily = temperature.dropna(subset=['ts', 'skin_temp']).copy()
+            temp_daily['day_dt'] = temp_daily['ts'].dt.tz_convert('UTC').dt.date
+            temp_daily = temp_daily.groupby('day_dt', as_index=False)['skin_temp'].mean()
+        add_chart(temp_daily, 'day_dt', 'skin_temp', 'Skin Temperature (Daily Avg) / 皮膚溫度（日均）', 'Daily Average Skin Temperature', '#f4a261', 'temp.svg')
+
+        if 'ts' in daystress.columns and 'stress_value' in daystress.columns and 'recovery_value' in daystress.columns:
+            ds = daystress.dropna(subset=['ts']).copy()
+            ds['day_dt'] = ds['ts'].dt.tz_convert('UTC').dt.date
+            ds = ds.groupby('day_dt', as_index=False)[['stress_value', 'recovery_value']].mean()
+            if not ds.empty:
+                xs = [str(x)[:10] for x in ds['day_dt'].tolist()]
+                charts.append(('Stress vs Recovery / 壓力與恢復', save_chart_s('stress_recovery.svg', dual_line_svg(xs, ds['stress_value'].tolist(), ds['recovery_value'].tolist(), 'Daily Stress vs Recovery'))))
+
+        # Daily temperature deviation (API has no skin-temperature time series;
+        # daily deviation from readiness is the closest available signal).
+        add_chart(readiness, 'day_dt', 'temperature_deviation', 'Temperature Deviation (Daily) / 體溫偏差（每日）', 'Daily Temperature Deviation', '#e07a5f', 'temp_dev.svg')
+
+        # Daily stress vs recovery from dailystress.csv (API has no daytime
+        # stress time series; daily aggregates are the closest available signal).
+        if 'day_dt' in dailystress.columns and 'stress_high' in dailystress.columns and 'recovery_high' in dailystress.columns:
+            ds = dailystress[['day_dt', 'stress_high', 'recovery_high']].dropna(subset=['day_dt']).sort_values('day_dt')
+            if not ds.empty:
+                xs = [str(x)[:10] for x in ds['day_dt'].tolist()]
+                charts.append(('Stress vs Recovery (Daily) / 壓力與恢復（每日）', save_chart_s('stress_daily.svg', dual_line_svg(xs, (ds['stress_high'] / 60.0).tolist(), (ds['recovery_high'] / 60.0).tolist(), 'Daily Stress vs Recovery (minutes)'))))
+
+        # Deep vs REM sleep minutes from sleepmodel.csv.
+        if 'day_dt' in sleepmodel.columns and 'deep_sleep_duration' in sleepmodel.columns and 'rem_sleep_duration' in sleepmodel.columns:
+            sm = sleepmodel[['day_dt', 'deep_sleep_duration', 'rem_sleep_duration']].dropna(subset=['day_dt']).sort_values('day_dt')
+            if not sm.empty:
+                xs = [str(x)[:10] for x in sm['day_dt'].tolist()]
+                charts.append(('Deep vs REM Sleep (minutes) / 深睡與 REM（分鐘）', save_chart_s('sleep_stages.svg', dual_line_svg(xs, (sm['deep_sleep_duration'] / 60.0).tolist(), (sm['rem_sleep_duration'] / 60.0).tolist(), 'Deep vs REM Sleep (minutes)', 'Deep', 'REM'))))
+
+        return charts
+
+    _full = compute_view(dailyactivity, dailysleep, readiness, dailyspo2, dailystress, sleepmodel)
+    sp_steps = _full['sp_steps']; sp_sleep_score = _full['sp_sleep_score']
+    sp_readiness = _full['sp_readiness']; sp_activity_score = _full['sp_activity_score']
+    sp_spo2 = _full['sp_spo2']; sp_nightly_hr = _full['sp_nightly_hr']
+    sp_temp_dev = _full['sp_temp_dev']; sp_sleep_hours = _full['sp_sleep_hours']
+    sleep_under7 = _full['sleep_under7']; spo2_below95 = _full['spo2_below95']
+    nightly_hr_out = _full['nightly_hr_out']; temp_dev_over = _full['temp_dev_over']
+    bands_df = _full['bands_df']; compare_df = _full['compare_df']
+    sleep_level = _full['sleep_level']; hr_level = _full['hr_level']
+    spo2_level = _full['spo2_level']; temp_level = _full['temp_level']
+    sleep_score_level = _full['sleep_score_level']; readiness_level = _full['readiness_level']
+    steps_level = _full['steps_level']
+    lvl_text = _full['lvl_text']; nightly_hr = _full['nightly_hr']
+    sleep_mean = _full['sleep_mean']; hr_mean = _full['hr_mean']; spo2_mean = _full['spo2_mean']
+    temp_mean = _full['temp_mean']; sleep_score_mean = _full['sleep_score_mean']
+    readiness_mean = _full['readiness_mean']; steps_mean = _full['steps_mean']
+    charts = build_charts(dailyactivity, dailysleep, readiness, dailyspo2, dailystress, daystress, heartrate, temperature, sleepmodel, '')
+
     rec_rows: list[dict[str, Any]] = []
     risk_weight = {'High / 高': 3, 'Moderate / 中': 2, 'Low / 低': 1}
 
@@ -1043,62 +1127,7 @@ def main() -> None:
     summary_en_html = "<br/>".join([opener_en, p1_en, p2_en])
     summary_zh_html = "<br/>".join([opener_zh, p1_zh, p2_zh])
 
-    # Trend charts
-    charts: list[tuple[str, str]] = []
-
-    def add_chart(df: pd.DataFrame, xcol: str, ycol: str, label: str, title: str, color: str, file: str):
-        if xcol in df.columns and ycol in df.columns:
-            d = df[[xcol, ycol]].dropna().sort_values(xcol)
-            if not d.empty:
-                xs = [str(x)[:10] for x in d[xcol].tolist()]
-                ys = [float(y) for y in d[ycol].tolist()]
-                charts.append((label, save_chart(file, line_svg(xs, ys, title, color))))
-
-    add_chart(dailyactivity, 'day_dt', 'steps', 'Daily Steps / 每日步數', 'Daily Steps Trend', '#ff6b8b', 'steps.svg')
-    add_chart(dailysleep, 'day_dt', 'score', 'Sleep Score / 睡眠分數', 'Sleep Score Trend', '#5e60ce', 'sleep.svg')
-    add_chart(readiness, 'day_dt', 'score', 'Readiness Score / 準備度分數', 'Readiness Score Trend', '#2a9d8f', 'readiness.svg')
-
-    hr_daily = pd.DataFrame()
-    if 'ts' in heartrate.columns and 'bpm' in heartrate.columns:
-        hr_daily = heartrate.dropna(subset=['ts', 'bpm']).copy()
-        hr_daily['day_dt'] = hr_daily['ts'].dt.tz_convert('UTC').dt.date
-        hr_daily = hr_daily.groupby('day_dt', as_index=False)['bpm'].mean()
-    add_chart(hr_daily, 'day_dt', 'bpm', 'Heart Rate (Daily Avg) / 心率（日均）', 'Daily Average Heart Rate', '#e63946', 'heart.svg')
-
-    temp_daily = pd.DataFrame()
-    if 'ts' in temperature.columns and 'skin_temp' in temperature.columns:
-        temp_daily = temperature.dropna(subset=['ts', 'skin_temp']).copy()
-        temp_daily['day_dt'] = temp_daily['ts'].dt.tz_convert('UTC').dt.date
-        temp_daily = temp_daily.groupby('day_dt', as_index=False)['skin_temp'].mean()
-    add_chart(temp_daily, 'day_dt', 'skin_temp', 'Skin Temperature (Daily Avg) / 皮膚溫度（日均）', 'Daily Average Skin Temperature', '#f4a261', 'temp.svg')
-
-    if 'ts' in daystress.columns and 'stress_value' in daystress.columns and 'recovery_value' in daystress.columns:
-        ds = daystress.dropna(subset=['ts']).copy()
-        ds['day_dt'] = ds['ts'].dt.tz_convert('UTC').dt.date
-        ds = ds.groupby('day_dt', as_index=False)[['stress_value', 'recovery_value']].mean()
-        if not ds.empty:
-            xs = [str(x)[:10] for x in ds['day_dt'].tolist()]
-            charts.append(('Stress vs Recovery / 壓力與恢復', save_chart('stress_recovery.svg', dual_line_svg(xs, ds['stress_value'].tolist(), ds['recovery_value'].tolist(), 'Daily Stress vs Recovery'))))
-
-    # Daily temperature deviation (API has no skin-temperature time series;
-    # daily deviation from readiness is the closest available signal).
-    add_chart(readiness, 'day_dt', 'temperature_deviation', 'Temperature Deviation (Daily) / 體溫偏差（每日）', 'Daily Temperature Deviation', '#e07a5f', 'temp_dev.svg')
-
-    # Daily stress vs recovery from dailystress.csv (API has no daytime
-    # stress time series; daily aggregates are the closest available signal).
-    if 'day_dt' in dailystress.columns and 'stress_high' in dailystress.columns and 'recovery_high' in dailystress.columns:
-        ds = dailystress[['day_dt', 'stress_high', 'recovery_high']].dropna(subset=['day_dt']).sort_values('day_dt')
-        if not ds.empty:
-            xs = [str(x)[:10] for x in ds['day_dt'].tolist()]
-            charts.append(('Stress vs Recovery (Daily) / 壓力與恢復（每日）', save_chart('stress_daily.svg', dual_line_svg(xs, (ds['stress_high'] / 60.0).tolist(), (ds['recovery_high'] / 60.0).tolist(), 'Daily Stress vs Recovery (minutes)'))))
-
-    # Deep vs REM sleep minutes from sleepmodel.csv.
-    if 'day_dt' in sleepmodel.columns and 'deep_sleep_duration' in sleepmodel.columns and 'rem_sleep_duration' in sleepmodel.columns:
-        sm = sleepmodel[['day_dt', 'deep_sleep_duration', 'rem_sleep_duration']].dropna(subset=['day_dt']).sort_values('day_dt')
-        if not sm.empty:
-            xs = [str(x)[:10] for x in sm['day_dt'].tolist()]
-            charts.append(('Deep vs REM Sleep (minutes) / 深睡與 REM（分鐘）', save_chart('sleep_stages.svg', dual_line_svg(xs, (sm['deep_sleep_duration'] / 60.0).tolist(), (sm['rem_sleep_duration'] / 60.0).tolist(), 'Deep vs REM Sleep (minutes)', 'Deep', 'REM'))))
-
+    # (trend charts are built by build_charts above, per view)
     # Utility for html table
     def table_html(df: pd.DataFrame, max_rows: int = 300) -> str:
         if df is None or df.empty:
@@ -1141,22 +1170,6 @@ def main() -> None:
 </ul>
 """
 
-    _vitals = [
-        ('Sleep score 睡眠分數', fmt(sp_sleep_score.get('mean'), 0), sleep_score_level),
-        ('Readiness 準備度', fmt(sp_readiness.get('mean'), 0), readiness_level),
-        ('Sleep hours 睡眠時數', fmt(sp_sleep_hours.get('mean'), 1) + ' h', sleep_level),
-        ('Night HR 夜間心率', fmt(sp_nightly_hr.get('mean'), 0) + ' bpm', hr_level),
-        ('SpO2 血氧', fmt(sp_spo2.get('mean'), 1) + ' %', spo2_level),
-        ('Temp dev 體溫偏差', fmt(sp_temp_dev.get('mean'), 2), temp_level),
-        ('Steps 步數', fmt(sp_steps.get('mean'), 0), steps_level),
-    ]
-    _attention = [(lbl, lvl) for (lbl, _v, lvl) in _vitals if lvl != 'green']
-    _stress14 = None
-    if not dailystress.empty and 'stress_high' in dailystress.columns and 'recovery_high' in dailystress.columns and 'day_dt' in dailystress.columns:
-        _w = dailystress.dropna(subset=['day_dt']).sort_values('day_dt').tail(14)
-        if len(_w) >= 7:
-            _stress14 = (float(_w['stress_high'].sum()), float(_w['recovery_high'].sum()),
-                         str(_w['day_summary'].iloc[-1]) if 'day_summary' in _w.columns and pd.notna(_w['day_summary'].iloc[-1]) else '')
     _top_actions = [(r.get('Domain / 面向', ''), r.get('Risk', ''), r.get('Action (2-4 weeks) / 建議行動（2-4 週）', '')) for r in rec_rows[:2]]
     _bg_path = BASE / 'resilience_background.html'
     background_html = ''
@@ -1164,8 +1177,74 @@ def main() -> None:
         background_html = ('<h2>Background: Health Resilience / 背景資料：健康韌性</h2>'
                            '<div class="card">' + _bg_path.read_text(encoding='utf-8') + '</div>')
 
-    summary_html = summary_section(sp_sleep_score.get('mean'), sp_readiness.get('mean'),
-                                   _vitals, _attention, _stress14, _top_actions, window_text)
+    # --- Period views: Summary / Comparison / Trends each get a Period selector.
+    # Weekly periods anchored at the first data day; default = latest period
+    # (past week + current period days); "All data" keeps the full-window view.
+    def _slice(df, d0, d1):
+        if df is None or df.empty:
+            return df
+        if 'day_dt' in df.columns:
+            return df[(df['day_dt'].dt.date >= d0) & (df['day_dt'].dt.date <= d1)]
+        if 'ts' in df.columns:
+            return df[(df['ts'].dt.date >= d0) & (df['ts'].dt.date <= d1)]
+        return df
+
+    def _period_selector(cls, idprefix, defs, extra_cls=None):
+        opts = ''.join(f'<option value="{idprefix}-{k}">{label}</option>' for k, label, _ in defs)
+        groups = f'.{cls}' + (f', .{extra_cls}' if extra_cls else '')
+        onchange = (f"(document.querySelectorAll('{groups}').forEach(p=>p.style.display='none'),"
+                    f"document.getElementById(this.value).style.display='block'"
+                    + (f",document.getElementById(this.value+'-b').style.display='block'" if extra_cls else '') + ')')
+        return f'<p><label>Period 期間：<select onchange="{onchange}">{opts}</select></label></p>'
+
+    _axis = dailysleep if 'day_dt' in dailysleep.columns else dailystress
+    _days = sorted(_axis['day_dt'].dt.date.unique().tolist()) if 'day_dt' in _axis.columns else []
+    _weeks = [_days[i:i + 7] for i in range(0, len(_days), 7)]
+    _view_defs = []
+    if _days:
+        _latest_rng = (_weeks[-2][0], _weeks[-1][-1]) if len(_weeks) >= 2 else (_days[0], _days[-1])
+        _view_defs.append(('latest', 'Latest — past week + current period 最新（上週＋本期）', _latest_rng))
+        _view_defs.append(('all', 'All data 全部期間', (_days[0], _days[-1])))
+        for _i, _wk in enumerate(reversed(_weeks)):
+            _view_defs.append((f'week{len(_weeks) - _i}', f'Week {len(_weeks) - _i} · {_wk[0]} to {_wk[-1]}', (_wk[0], _wk[-1])))
+
+    _sum_blocks, _cmp_blocks, _bands_blocks, _trd_blocks = [], [], [], []
+    for _vi, (_key, _label, (_d0, _d1)) in enumerate(_view_defs):
+        _disp = 'block' if _vi == 0 else 'none'
+        _sl = {n: _slice(f, _d0, _d1) for n, f in [('dailyactivity', dailyactivity), ('dailysleep', dailysleep),
+               ('readiness', readiness), ('dailyspo2', dailyspo2), ('dailystress', dailystress), ('sleepmodel', sleepmodel)]}
+        _v = _full if _key == 'all' else compute_view(_sl['dailyactivity'], _sl['dailysleep'], _sl['readiness'], _sl['dailyspo2'], _sl['dailystress'], _sl['sleepmodel'])
+        _vit = [
+            ('Sleep score 睡眠分數', fmt(_v['sp_sleep_score'].get('mean'), 0), _v['sleep_score_level']),
+            ('Readiness 準備度', fmt(_v['sp_readiness'].get('mean'), 0), _v['readiness_level']),
+            ('Sleep hours 睡眠時數', fmt(_v['sp_sleep_hours'].get('mean'), 1) + ' h', _v['sleep_level']),
+            ('Night HR 夜間心率', fmt(_v['sp_nightly_hr'].get('mean'), 0) + ' bpm', _v['hr_level']),
+            ('SpO2 血氧', fmt(_v['sp_spo2'].get('mean'), 1) + ' %', _v['spo2_level']),
+            ('Temp dev 體溫偏差', fmt(_v['sp_temp_dev'].get('mean'), 2), _v['temp_level']),
+            ('Steps 步數', fmt(_v['sp_steps'].get('mean'), 0), _v['steps_level']),
+        ]
+        _att = [(lbl, lvl) for (lbl, _vv, lvl) in _vit if lvl != 'green']
+        _stv = None
+        _nd = 14
+        _dsv = _sl['dailystress']
+        if not _dsv.empty and 'stress_high' in _dsv.columns and 'recovery_high' in _dsv.columns and 'day_dt' in _dsv.columns:
+            _w = _dsv.dropna(subset=['day_dt']).sort_values('day_dt')
+            if len(_w) >= 3:
+                _stv = (float(_w['stress_high'].sum()), float(_w['recovery_high'].sum()),
+                        str(_w['day_summary'].iloc[-1]) if 'day_summary' in _w.columns and pd.notna(_w['day_summary'].iloc[-1]) else '')
+                _nd = max(1, len(_w))
+        _sum_blocks.append(f'<div class="sum-period" id="sumperiod-{_key}" style="display:{_disp}">'
+                           + summary_section(_v['sp_sleep_score'].get('mean'), _v['sp_readiness'].get('mean'), _vit, _att, _stv, _top_actions, window_text, _nd) + '</div>')
+        _cmp_blocks.append(f'<div class="cmp-period" id="cmpperiod-{_key}" style="display:{_disp}">{table_html(_v["compare_df"])}</div>')
+        _bands_blocks.append(f'<div class="cmp-period-b" id="cmpperiod-{_key}-b" style="display:{_disp}">{table_html(_v["bands_df"])}</div>')
+        _vcharts = charts if _key == 'all' else build_charts(_sl['dailyactivity'], _sl['dailysleep'], _sl['readiness'], _sl['dailyspo2'], _sl['dailystress'], _slice(daystress, _d0, _d1), _slice(heartrate, _d0, _d1), _slice(temperature, _d0, _d1), _sl['sleepmodel'], f'_{_key}')
+        _grid = ''.join([f'<div class="chart-item card"><h3>{t}</h3>{(ASSET_DIR / f).read_text(encoding="utf-8")}</div>' for t, f in _vcharts])
+        _trd_blocks.append(f'<div class="trd-period" id="trdperiod-{_key}" style="display:{_disp}"><div class="chart-grid">{_grid}</div></div>')
+
+    summary_html = _period_selector('sum-period', 'sumperiod', _view_defs) + ''.join(_sum_blocks)
+    comparison_html = _period_selector('cmp-period', 'cmpperiod', _view_defs, 'cmp-period-b') + ''.join(_cmp_blocks)
+    comparison_bands_html = ''.join(_bands_blocks)
+    trends_html = _period_selector('trd-period', 'trdperiod', _view_defs) + ''.join(_trd_blocks)
 
     resilience_html = resilience_section(dailystress, dailysleep, sleepmodel)
 
@@ -1244,11 +1323,11 @@ def main() -> None:
     </div>
 
     <h2>2) Preventive Comparison Table / 預防醫學比較表（含健康族群標準）</h2>
-    <div class=\"card\">{table_html(compare_df)}</div>
+    <div class=\"card\">{comparison_html}</div>
     <p class=\"muted footnote-sm\">Color rule: <span class=\"danger\">Red</span> = high risk, <span class=\"warn\">Yellow</span> = mild caution, <span class=\"good\">Green</span> = relatively stable.</p>
 
     <h2>3) Oura Score Band Distribution / 分數區間分佈</h2>
-    <div class=\"card\">{table_html(bands_df)}
+    <div class=\"card\">{comparison_bands_html}
       <div class=\"footnote-sm\">
         <p><b>Footnote / 註解</b></p>
         <ul>
@@ -1278,7 +1357,7 @@ def main() -> None:
     </div>
     <div class="tab-panel" id="panel-trends" style="display:none">
     <h2>5) Trend Graphs / 趨勢圖</h2>
-    <div class=\"chart-grid\">{''.join([f'<div class="chart-item card"><h3>{t}</h3>{(ASSET_DIR/f).read_text(encoding="utf-8")}</div>' for t, f in charts])}</div>
+    {trends_html}
 
     </div>
     <div class="tab-panel" id="panel-actions" style="display:none">
