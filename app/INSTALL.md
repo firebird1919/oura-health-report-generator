@@ -64,7 +64,7 @@ score.
 
 ## Optional payload fields: stressDays and resilience
 
-Two optional payload fields light up extra UI when present (older
+Four optional payload fields light up extra UI when present (older
 snapshots without them render exactly as before):
 
 - `stressDays` — Oura's per-day stress summary labels (`day_summary` in
@@ -79,6 +79,12 @@ snapshots without them render exactly as before):
   official reading there; for a first snapshot without one, use a
   clearly-labeled placeholder. Never put anyone else's readings or
   values in the repo copy — the repo seed's anchor is an invented sample.
+  Its optional `dailySeries` field (the full-dataset daily series)
+  drives the Resilience tab's own Period dropdown over weekly periods.
+- `periodViews` — precomputed per-period views (latest / all data / one
+  per weekly period), each with its own summary, comparison, bands and
+  charts; when present, the Summary, Comparison and Trends tabs each get
+  a Period dropdown over them.
 
 ## Refreshing later
 

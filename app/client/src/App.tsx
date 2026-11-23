@@ -4,7 +4,10 @@
 // report sections one tap away in detail tabs: Resilience, Comparison,
 // Trends, Notes, Actions — the Resilience tab sits right after Summary and
 // shows only this app's Estimated Resilience calculation (level, trend,
-// contributors, map). Renders the newest stored snapshot by default and
+// contributors, map). When a snapshot carries precomputed period views,
+// the Summary, Comparison and Trends tabs each get a Period dropdown
+// (latest / all data / weekly periods) like the Resilience tab's.
+// Renders the newest stored snapshot by default and
 // lets past snapshots be browsed from the history strip. All report
 // content comes from the snapshot payload (server data); nothing
 // person-specific is hard-coded here — the summary is derived from the
@@ -31,6 +34,7 @@ type SnapshotFull = NonNullable<ApiResponse<typeof api, "getSnapshot">["snapshot
 type Payload = SnapshotFull["payload"];
 type ComparisonRow = Payload["comparison"][number];
 type RiskTone = Payload["comparison"][number]["risk"];
+type PeriodView = NonNullable<Payload["periodViews"]>[number];
 
 type TabId = "summary" | "comparison" | "trends" | "notes" | "actions" | "resilience";
 
@@ -100,6 +104,89 @@ const TOOLTIP_STYLE = {
 
 function shortDay(day: string): string {
   return day.slice(5); // MM-DD
+}
+
+/* ------------------------- daily-series period logic ------------------------ */
+// The resilience estimate is computed over the maximum data available (at
+// least 7 days required). Its daily detail is organized into weekly
+// periods anchored at the first day of the dataset. The default view is
+// the past week + the days of the current (latest, possibly partial)
+// period; earlier weeks are reachable from the period dropdown.
+
+type DailyRow = {
+  date: string;
+  index: number | null;
+  stressRolling: number | null;
+  recoveryRolling: number | null;
+  stressMin: number;
+  recoveryMin: number;
+  label: string;
+};
+
+type DailySeriesRaw = [
+  string,
+  number | null,
+  number | null,
+  number | null,
+  number,
+  number,
+  string,
+][];
+
+function parseDailySeries(raw: DailySeriesRaw): DailyRow[] {
+  return raw.map(([date, index, sR, rR, sMin, rMin, label]) => ({
+    date,
+    index,
+    stressRolling: sR,
+    recoveryRolling: rR,
+    stressMin: sMin,
+    recoveryMin: rMin,
+    label: label === "nan" ? "" : label,
+  }));
+}
+
+type WeekPeriod = {
+  weekNum: number;
+  start: string;
+  end: string;
+  rows: DailyRow[];
+};
+
+function buildWeeks(rows: DailyRow[]): WeekPeriod[] {
+  const weeks: WeekPeriod[] = [];
+  for (let i = 0; i < rows.length; i += 7) {
+    const slice = rows.slice(i, i + 7);
+    const first = slice[0];
+    const last = slice[slice.length - 1];
+    if (first && last) {
+      weeks.push({
+        weekNum: weeks.length + 1,
+        start: first.date,
+        end: last.date,
+        rows: slice,
+      });
+    }
+  }
+  return weeks;
+}
+
+// Default period: the past (last complete) week plus the days of the
+// current period. With only one week of data, that week alone.
+function defaultPeriodRows(rows: DailyRow[], weeks: WeekPeriod[]): DailyRow[] {
+  if (weeks.length >= 2) {
+    const prev = weeks[weeks.length - 2];
+    const curr = weeks[weeks.length - 1];
+    return [...(prev?.rows ?? []), ...(curr?.rows ?? [])];
+  }
+  return rows;
+}
+
+function levelForIndex(v: number): string {
+  if (v < 40) return "Limited";
+  if (v < 55) return "Adequate";
+  if (v < 65) return "Solid";
+  if (v < 80) return "Strong";
+  return "Exceptional";
 }
 
 function SingleChart({
@@ -232,7 +319,11 @@ function scoreBand(value: number): { en: string; zh: string; color: string } {
   return { en: "Pay Attention", zh: "需注意", color: "#e63946" };
 }
 
-function ScoreRing({ row }: { row: ComparisonRow }) {
+function ScoreRing({
+  row,
+}: {
+  row: { metricEn: string; metricZh: string; mean: string };
+}) {
   const value = Number.parseFloat(row.mean);
   const size = 136;
   const stroke = 10;
@@ -298,6 +389,57 @@ const VITAL_METRICS = [
   "Daily steps",
 ];
 
+/* ------------------------------ period picker ------------------------------ */
+// Shared Period dropdown for the Summary, Comparison and Trends tabs,
+// driven by the payload's precomputed period views (latest / all data /
+// weekly periods). Rendered only when the snapshot carries period views;
+// each tab keeps its own selection.
+
+const RISK_LABEL_BY_TONE: Record<RiskTone, string> = {
+  red: "High Risk / 高風險",
+  yellow: "Mild Caution / 輕度注意",
+  green: "Good / 穩定",
+};
+
+function PeriodPicker({
+  id,
+  views,
+  value,
+  onChange,
+}: {
+  id: string;
+  views: PeriodView[];
+  value: string;
+  onChange: (key: string) => void;
+}) {
+  const selected = views.find((v) => v.key === value) ?? views[0];
+  return (
+    <div className="mt-5">
+      <label htmlFor={id} className="text-sm font-semibold text-[var(--text)]">
+        Period / 期間
+      </label>
+      <select
+        id={id}
+        aria-label="Period"
+        value={selected?.key ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1.5 block min-h-11 w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text)]"
+      >
+        {views.map((v) => (
+          <option key={v.key} value={v.key}>
+            {v.labelEn} · {v.labelZh}
+          </option>
+        ))}
+      </select>
+      {selected ? (
+        <p className="mt-1.5 text-xs text-[var(--dim)]">
+          Showing / 顯示期間：{selected.start} → {selected.end}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function SummaryView({
   snapshot,
   onGoTab,
@@ -306,17 +448,142 @@ function SummaryView({
   onGoTab: (tab: TabId) => void;
 }) {
   const p = snapshot.payload;
-  const scoreRows = p.comparison.filter((r) => r.unit === "0-100");
-  const vitals = VITAL_METRICS.map((name) =>
-    p.comparison.find((r) => r.metricEn === name),
-  ).filter((r): r is ComparisonRow => r != null);
-  const attention = p.comparison.filter((r) => r.risk !== "green");
+  // Period views: when the snapshot carries precomputed period views, the
+  // rings, vitals, needs-attention list and stress card describe the
+  // selected period (default: the first view, "latest"); the top priority
+  // actions stay global. Without views, everything derives from the
+  // top-level payload fields exactly as before.
+  const periodViews = p.periodViews ?? [];
+  const [periodKey, setPeriodKey] = useState<string | null>(null);
+  const view = periodViews.find((v) => v.key === periodKey) ?? periodViews[0];
+  const scoreRows: { metricEn: string; metricZh: string; mean: string }[] =
+    view
+      ? [
+          ...(view.summary.sleepScoreMean != null
+            ? [
+                {
+                  metricEn: "Sleep score",
+                  metricZh: "睡眠分數",
+                  mean: String(view.summary.sleepScoreMean),
+                },
+              ]
+            : []),
+          ...(view.summary.readinessMean != null
+            ? [
+                {
+                  metricEn: "Readiness score",
+                  metricZh: "準備度分數",
+                  mean: String(view.summary.readinessMean),
+                },
+              ]
+            : []),
+        ]
+      : p.comparison.filter((r) => r.unit === "0-100");
+  type VitalItem = {
+    key: string;
+    en: string;
+    zh: string;
+    value: string;
+    sub: string;
+    tone: RiskTone;
+  };
+  const vitals: VitalItem[] = view
+    ? view.summary.vitals.map((v) => ({
+        key: v.labelEn,
+        en: v.labelEn,
+        zh: v.labelZh,
+        value: v.value,
+        sub: "period avg / 本期間平均",
+        tone: v.level,
+      }))
+    : VITAL_METRICS.map((name) =>
+        p.comparison.find((r) => r.metricEn === name),
+      )
+        .filter((r): r is ComparisonRow => r != null)
+        .map((row) => ({
+          key: row.metricEn,
+          en: row.metricEn,
+          zh: row.metricZh,
+          value: row.mean,
+          sub: `${row.unit} · avg / 平均`,
+          tone: row.risk,
+        }));
+  type AttentionItem = {
+    key: string;
+    en: string;
+    zh: string;
+    tone: RiskTone;
+    badge: string;
+    interpretation?: string;
+  };
+  const attention: AttentionItem[] = view
+    ? view.summary.attention.map((a) => ({
+        key: a.labelEn,
+        en: a.labelEn,
+        zh: a.labelZh,
+        tone: a.level,
+        badge: RISK_LABEL_BY_TONE[a.level],
+      }))
+    : p.comparison
+        .filter((r) => r.risk !== "green")
+        .map((row) => ({
+          key: row.metricEn,
+          en: row.metricEn,
+          zh: row.metricZh,
+          tone: row.risk,
+          badge: row.riskLabel,
+          interpretation: row.interpretation,
+        }));
   const topActions = p.recommendations.slice(0, 2);
+  // Stress & recovery at a glance. With period views, it totals the
+  // selected period from the view's precomputed stress block. Otherwise it
+  // describes the DEFAULT period — the past week + the days of the current
+  // period — computed from the full-dataset daily series when the snapshot
+  // carries one; older snapshots fall back to the report window's
+  // stress/recovery chart series.
+  const viewStress = view?.summary.stress ?? null;
+  const dailyRows = p.resilience?.dailySeries
+    ? parseDailySeries(p.resilience.dailySeries as DailySeriesRaw)
+    : null;
+  const stressPeriodRows =
+    dailyRows && dailyRows.length > 0
+      ? defaultPeriodRows(dailyRows, buildWeeks(dailyRows))
+      : null;
   const stressData = p.charts.stressRecovery;
-  const hasStress =
-    stressData.length > 0 && stressData.some((d) => d.a > 0 || d.b > 0);
-  const stressTotal = stressData.reduce((s, d) => s + d.a, 0);
-  const recoveryTotal = stressData.reduce((s, d) => s + d.b, 0);
+  const stressCount = view
+    ? (viewStress?.days ?? 0)
+    : stressPeriodRows
+      ? stressPeriodRows.length
+      : stressData.length;
+  const hasStress = view
+    ? viewStress != null && (viewStress.stressMin > 0 || viewStress.recoveryMin > 0)
+    : stressPeriodRows
+      ? stressPeriodRows.some((d) => d.stressMin > 0 || d.recoveryMin > 0)
+      : stressData.length > 0 && stressData.some((d) => d.a > 0 || d.b > 0);
+  const stressTotal = view
+    ? (viewStress?.stressMin ?? 0)
+    : stressPeriodRows
+      ? stressPeriodRows.reduce((s, d) => s + d.stressMin, 0)
+      : stressData.reduce((s, d) => s + d.a, 0);
+  const recoveryTotal = view
+    ? (viewStress?.recoveryMin ?? 0)
+    : stressPeriodRows
+      ? stressPeriodRows.reduce((s, d) => s + d.recoveryMin, 0)
+      : stressData.reduce((s, d) => s + d.b, 0);
+  const stressAvg = view
+    ? (viewStress?.avgStressMin ?? 0)
+    : Math.round(stressTotal / Math.max(stressCount, 1));
+  const recoveryAvg = view
+    ? (viewStress?.avgRecoveryMin ?? 0)
+    : Math.round(recoveryTotal / Math.max(stressCount, 1));
+  const stressPeriodLabel = stressPeriodRows
+    ? `${stressPeriodRows[0]?.date ?? ""} → ${stressPeriodRows[stressPeriodRows.length - 1]?.date ?? ""}`
+    : null;
+  const stressHeader = view
+    ? `Period totals · ${stressCount} days · ${view.start} → ${view.end} / 本期間總計`
+    : stressPeriodLabel
+      ? `Past week + current period · ${stressCount} days · ${stressPeriodLabel} / 上週＋本期`
+      : `Window totals · ${stressCount} days / 本期總計`;
   const stressMax = Math.max(stressTotal, recoveryTotal, 1);
   const stressBalance =
     recoveryTotal > 0
@@ -324,15 +591,30 @@ function SummaryView({
       : stressTotal > 0
         ? "stress only"
         : "—";
-  const latestStressSummary = [...(p.stressDays ?? [])]
-    .reverse()
-    .find((s) => s.summary.trim() !== "")?.summary;
+  const latestStressSummary = view
+    ? viewStress?.latestLabel || undefined
+    : dailyRows
+      ? [...dailyRows].reverse().find((s) => s.label.trim() !== "")?.label
+      : [...(p.stressDays ?? [])]
+          .reverse()
+          .find((s) => s.summary.trim() !== "")?.summary;
 
   return (
     <div>
       <p className="mt-5 text-sm text-[var(--dim)]">
-        This window at a glance / 本期總覽 · {snapshot.windowStart} → {snapshot.windowEnd}
+        {view
+          ? `This period at a glance / 本期間總覽 · ${view.start} → ${view.end}`
+          : `This window at a glance / 本期總覽 · ${snapshot.windowStart} → ${snapshot.windowEnd}`}
       </p>
+
+      {periodViews.length > 0 ? (
+        <PeriodPicker
+          id="summary-period"
+          views={periodViews}
+          value={view?.key ?? ""}
+          onChange={setPeriodKey}
+        />
+      ) : null}
 
       {/* Headline scores, Oura style */}
       {scoreRows.length > 0 ? (
@@ -350,20 +632,20 @@ function SummaryView({
         <>
           <SectionTitle>Vitals / 關鍵數據</SectionTitle>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            {vitals.map((row) => (
-              <Card key={row.metricEn} className="p-3.5">
+            {vitals.map((item) => (
+              <Card key={item.key} className="p-3.5">
                 <p className="flex items-start justify-between gap-1 text-xs text-[var(--dim)]">
                   <span>
-                    {row.metricEn}
+                    {item.en}
                     <br />
-                    {row.metricZh}
+                    {item.zh}
                   </span>
-                  <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${RISK_DOT[row.risk]}`} />
+                  <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${RISK_DOT[item.tone]}`} />
                 </p>
                 <p className="mt-1.5 text-2xl font-bold [font-variant-numeric:tabular-nums] text-[var(--text)]">
-                  {row.mean}
+                  {item.value}
                 </p>
-                <p className="text-xs text-[var(--dim)]">{row.unit} · avg / 平均</p>
+                <p className="text-xs text-[var(--dim)]">{item.sub}</p>
               </Card>
             ))}
           </div>
@@ -380,9 +662,7 @@ function SummaryView({
             className="block w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-left shadow-[0_6px_20px_rgba(30,43,67,0.06)]"
           >
             <span className="flex items-center justify-between gap-2">
-              <span className="text-xs text-[var(--dim)]">
-                Window totals · {stressData.length} days / 本期總計
-              </span>
+              <span className="text-xs text-[var(--dim)]">{stressHeader}</span>
               {latestStressSummary ? (
                 <span className="inline-flex items-center gap-1.5">
                   <span className="text-[11px] text-[var(--dim)]">
@@ -404,8 +684,7 @@ function SummaryView({
                   />
                 </span>
                 <span className="w-28 shrink-0 text-right text-xs [font-variant-numeric:tabular-nums] text-[var(--text)]">
-                  {stressTotal.toLocaleString()} min ·{" "}
-                  {Math.round(stressTotal / stressData.length)}/day
+                  {stressTotal.toLocaleString()} min · {stressAvg}/day
                 </span>
               </span>
               <span className="flex items-center gap-2">
@@ -419,8 +698,7 @@ function SummaryView({
                   />
                 </span>
                 <span className="w-28 shrink-0 text-right text-xs [font-variant-numeric:tabular-nums] text-[var(--text)]">
-                  {recoveryTotal.toLocaleString()} min ·{" "}
-                  {Math.round(recoveryTotal / stressData.length)}/day
+                  {recoveryTotal.toLocaleString()} min · {recoveryAvg}/day
                 </span>
               </span>
             </span>
@@ -440,23 +718,25 @@ function SummaryView({
         <>
           <SectionTitle>Needs Attention / 需要注意</SectionTitle>
           <div className="grid gap-3">
-            {attention.map((row) => (
+            {attention.map((item) => (
               <button
-                key={row.metricEn}
+                key={item.key}
                 type="button"
                 onClick={() => onGoTab("comparison")}
                 className="flex w-full items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-left shadow-[0_6px_20px_rgba(30,43,67,0.06)]"
               >
-                <span className={`inline-block h-3 w-3 shrink-0 rounded-full ${RISK_DOT[row.risk]}`} />
+                <span className={`inline-block h-3 w-3 shrink-0 rounded-full ${RISK_DOT[item.tone]}`} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-semibold text-[var(--text)]">
-                    {row.metricEn} <span className="text-[var(--dim)]">/ {row.metricZh}</span>
+                    {item.en} <span className="text-[var(--dim)]">/ {item.zh}</span>
                   </span>
-                  <span className="block truncate text-sm text-[var(--dim)]">
-                    {row.interpretation}
-                  </span>
+                  {item.interpretation ? (
+                    <span className="block truncate text-sm text-[var(--dim)]">
+                      {item.interpretation}
+                    </span>
+                  ) : null}
                 </span>
-                <RiskBadge tone={row.risk} label={row.riskLabel} />
+                <RiskBadge tone={item.tone} label={item.badge} />
               </button>
             ))}
           </div>
@@ -503,14 +783,18 @@ function SummaryView({
 
 /* ------------------------------ detail sections ---------------------------- */
 
-function ComparisonSection({ payload }: { payload: Payload }) {
+function ComparisonSection({
+  comparison,
+}: {
+  comparison: Payload["comparison"];
+}) {
   return (
     <>
       <SectionTitle>Preventive Comparison Table / 預防醫學比較表（含健康族群標準）</SectionTitle>
 
       {/* Phone: one card per metric */}
       <div className="grid gap-3 md:hidden">
-        {payload.comparison.map((row) => (
+        {comparison.map((row) => (
           <Card key={row.metricEn}>
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -569,7 +853,7 @@ function ComparisonSection({ payload }: { payload: Payload }) {
             </tr>
           </thead>
           <tbody>
-            {payload.comparison.map((row) => (
+            {comparison.map((row) => (
               <tr key={row.metricEn} className="align-top">
                 <td className="border-b border-[var(--border)] px-2.5 py-2 font-medium whitespace-nowrap">
                   {row.metricEn}
@@ -611,12 +895,18 @@ const BAND_SEGMENTS = [
   { key: "attention", label: "Pay attention (0-59)", color: "#e63946" },
 ] as const;
 
-function BandsSection({ payload }: { payload: Payload }) {
+function BandsSection({
+  bands,
+  bandEvalZh,
+}: {
+  bands: Payload["bands"];
+  bandEvalZh: string;
+}) {
   return (
     <>
       <SectionTitle>Oura Score Band Distribution / 分數區間分佈</SectionTitle>
       <div className="grid gap-3">
-        {payload.bands.map((band) => (
+        {bands.map((band) => (
           <Card key={band.nameEn}>
             <div className="flex items-baseline justify-between gap-2">
               <p className="font-semibold text-[var(--text)]">
@@ -662,7 +952,7 @@ function BandsSection({ payload }: { payload: Payload }) {
       </div>
       <p className="mt-3 text-sm text-[var(--dim)]">
         <span className="font-semibold text-[var(--text)]">How this is evaluated / 怎麼評估：</span>{" "}
-        {payload.bandEvalZh}
+        {bandEvalZh}
       </p>
     </>
   );
@@ -688,8 +978,8 @@ function NotesSection({ payload }: { payload: Payload }) {
   );
 }
 
-function ChartsSection({ payload }: { payload: Payload }) {
-  const c = payload.charts;
+function ChartsSection({ charts }: { charts: Payload["charts"] }) {
+  const c = charts;
   return (
     <>
       <SectionTitle>Trend Graphs / 趨勢圖</SectionTitle>
@@ -847,12 +1137,16 @@ function contributorRatingColor(rating: string): string {
   return "var(--risk-green)";
 }
 
-function ResilienceTrendChart({ estimate }: { estimate: ResilienceEstimate }) {
+function ResilienceTrendChart({
+  data,
+}: {
+  data: ResilienceEstimate["trend"];
+}) {
   return (
     <div className="h-64">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart
-          data={estimate.trend}
+          data={data}
           margin={{ top: 6, right: 76, bottom: 0, left: 0 }}
         >
           {RESILIENCE_BANDS.map((band) => (
@@ -930,8 +1224,11 @@ function formatMapDayLabel(day: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function ResilienceMap({ estimate }: { estimate: ResilienceEstimate }) {
-  const points = estimate.map;
+function ResilienceMap({
+  points,
+}: {
+  points: ResilienceEstimate["map"];
+}) {
   if (points.length === 0) return null;
   const width = 340;
   const height = 264;
@@ -1163,6 +1460,77 @@ function ResilienceMap({ estimate }: { estimate: ResilienceEstimate }) {
   );
 }
 
+// Per-day stress vs recovery bars for one selected period, from the daily
+// series' raw minutes (stressMin / recoveryMin) with Oura day labels.
+function DailyStressRecoveryList({ rows }: { rows: DailyRow[] }) {
+  const max = Math.max(
+    1,
+    ...rows.map((r) => Math.max(r.stressMin, r.recoveryMin)),
+  );
+  const stressTotal = rows.reduce((s, d) => s + d.stressMin, 0);
+  const recoveryTotal = rows.reduce((s, d) => s + d.recoveryMin, 0);
+  return (
+    <div>
+      <p className="text-xs text-[var(--dim)]">
+        Period totals / 本期總計 — Stress 壓力{" "}
+        <span className="font-semibold text-[var(--text)]">
+          {stressTotal.toLocaleString()} min
+        </span>{" "}
+        · Recovery 恢復{" "}
+        <span className="font-semibold text-[var(--text)]">
+          {recoveryTotal.toLocaleString()} min
+        </span>
+      </p>
+      <ul className="mt-3 space-y-2.5">
+        {rows.map((r) => (
+          <li key={r.date} className="flex items-center gap-2">
+            <span className="w-14 shrink-0 text-xs [font-variant-numeric:tabular-nums] text-[var(--dim)]">
+              {formatMapDayLabel(r.date)}
+            </span>
+            <span className="min-w-0 flex-1 space-y-1">
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                  <span
+                    className="block h-full rounded-full bg-[var(--accent)]"
+                    style={{ width: `${(r.stressMin / max) * 100}%` }}
+                  />
+                </span>
+                <span className="w-16 shrink-0 text-right text-[11px] [font-variant-numeric:tabular-nums] text-[var(--text)]">
+                  {r.stressMin} min
+                </span>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                  <span
+                    className="block h-full rounded-full bg-[var(--risk-green)]"
+                    style={{ width: `${(r.recoveryMin / max) * 100}%` }}
+                  />
+                </span>
+                <span className="w-16 shrink-0 text-right text-[11px] [font-variant-numeric:tabular-nums] text-[var(--text)]">
+                  {r.recoveryMin} min
+                </span>
+              </span>
+            </span>
+            <span className="w-[74px] shrink-0 text-right">
+              {r.label ? <StressSummaryChip summary={r.label} /> : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 flex gap-4 text-[11px] text-[var(--dim)]">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
+          Stress 壓力
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--risk-green)]" />
+          Recovery 恢復
+        </span>
+      </p>
+    </div>
+  );
+}
+
 function EstimatedResilienceSection({ payload }: { payload: Payload }) {
   const estimate = payload.resilience;
   if (!estimate) return null;
@@ -1205,6 +1573,45 @@ function EstimatedResilienceSection({ payload }: { payload: Payload }) {
   const windowEnd = estimate.window[1] ?? windowStart;
   const levelColor = resilienceLevelColor(estimate.level);
 
+  // Weekly periods over the full daily series (anchored at the dataset's
+  // first day). Default: past week + current period; past weeks are not
+  // shown unless picked in the dropdown. Snapshots without a daily series
+  // fall back to the stored trend/map for the whole estimate window.
+  const [period, setPeriod] = useState<string>("latest");
+  const dailyRows = estimate.dailySeries
+    ? parseDailySeries(estimate.dailySeries as DailySeriesRaw)
+    : null;
+  const weeks = dailyRows ? buildWeeks(dailyRows) : [];
+  const sliceRows: DailyRow[] | null = !dailyRows
+    ? null
+    : period === "latest"
+      ? defaultPeriodRows(dailyRows, weeks)
+      : (weeks.find((w) => `week-${w.weekNum}` === period)?.rows ?? dailyRows);
+  const trendData: ResilienceEstimate["trend"] = sliceRows
+    ? sliceRows
+        .filter((r): r is DailyRow & { index: number } => r.index != null)
+        .map((r) => ({
+          day: r.date,
+          index: r.index,
+          level: levelForIndex(r.index),
+        }))
+    : estimate.trend;
+  const mapPoints: ResilienceEstimate["map"] = sliceRows
+    ? sliceRows
+        .filter(
+          (r): r is DailyRow & { stressRolling: number; recoveryRolling: number } =>
+            r.stressRolling != null && r.recoveryRolling != null,
+        )
+        .map((r) => ({
+          day: r.date,
+          stress_min: r.stressRolling,
+          recovery_min: r.recoveryRolling,
+        }))
+    : estimate.map;
+  const sliceLabel = sliceRows
+    ? `${sliceRows[0]?.date ?? ""} → ${sliceRows[sliceRows.length - 1]?.date ?? ""} · ${sliceRows.length} days`
+    : null;
+
   return (
     <section>
       <SectionTitle>Estimated Resilience / 估算韌性</SectionTitle>
@@ -1236,15 +1643,58 @@ function EstimatedResilienceSection({ payload }: { payload: Payload }) {
         </p>
       </Card>
 
+      {/* Period picker — past weeks stay hidden until picked here */}
+      {dailyRows && weeks.length > 0 ? (
+        <div className="mt-6">
+          <label
+            htmlFor="resilience-period"
+            className="text-sm font-semibold text-[var(--text)]"
+          >
+            Period / 期間
+          </label>
+          <select
+            id="resilience-period"
+            aria-label="Resilience period"
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
+            className="mt-1.5 block min-h-11 w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text)]"
+          >
+            <option value="latest">
+              Latest — past week + current period
+            </option>
+            {[...weeks].reverse().map((w) => (
+              <option key={w.weekNum} value={`week-${w.weekNum}`}>
+                Week {w.weekNum} · {w.start} to {w.end}
+              </option>
+            ))}
+          </select>
+          {sliceLabel ? (
+            <p className="mt-1.5 text-xs text-[var(--dim)]">
+              Showing / 顯示期間：{sliceLabel}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Trend view */}
       <SectionTitle>Trend / 趨勢</SectionTitle>
-      <Card>
-        <ResilienceTrendChart estimate={estimate} />
-        <p className="mt-1 text-xs text-[var(--dim)]">
-          Daily estimated index against Oura&apos;s five level bands (Limited ·
-          Adequate · Solid · Strong · Exceptional).
-        </p>
-      </Card>
+      {trendData.length > 0 ? (
+        <Card>
+          <ResilienceTrendChart data={trendData} />
+          <p className="mt-1 text-xs text-[var(--dim)]">
+            Daily estimated index against Oura&apos;s five level bands (Limited ·
+            Adequate · Solid · Strong · Exceptional).
+          </p>
+        </Card>
+      ) : (
+        <Card>
+          <p className="text-sm text-[var(--dim)]">
+            Not enough history yet — the resilience index needs at least 7
+            days of data, and this period comes before the first estimate.
+            歷史資料不足——韌性指數至少需要 7 天資料，本期間尚在首次估算之前。
+          </p>
+        </Card>
+      )}
 
       {/* Contributors, measured over the past 14 days */}
       <SectionTitle>Resilience Contributors / 韌性因子</SectionTitle>
@@ -1290,9 +1740,28 @@ function EstimatedResilienceSection({ payload }: { payload: Payload }) {
 
       {/* Map view */}
       <SectionTitle>Map / 分佈圖</SectionTitle>
-      <Card>
-        <ResilienceMap estimate={estimate} />
-      </Card>
+      {mapPoints.length > 0 ? (
+        <Card>
+          <ResilienceMap points={mapPoints} />
+        </Card>
+      ) : (
+        <Card>
+          <p className="text-sm text-[var(--dim)]">
+            No rolling stress/recovery averages in this period yet.
+            本期間尚無滾動壓力／恢復平均值。
+          </p>
+        </Card>
+      )}
+
+      {/* Per-day stress & recovery for the selected period */}
+      {sliceRows ? (
+        <>
+          <SectionTitle>Daily Stress &amp; Recovery / 每日壓力與恢復</SectionTitle>
+          <Card>
+            <DailyStressRecoveryList rows={sliceRows} />
+          </Card>
+        </>
+      ) : null}
 
       <p className="mt-3 text-xs leading-relaxed text-[var(--dim)]">
         <span className="font-semibold text-[var(--text)]">Method / 方法：</span>{" "}
@@ -1323,6 +1792,63 @@ function ResilienceView({ payload }: { payload: Payload }) {
 }
 
 /* ----------------------------------- app ----------------------------------- */
+
+// Comparison tab: the approach card stays global; the comparison table and
+// the score-band distribution follow the tab's own Period selection when
+// the snapshot carries period views.
+function ComparisonTab({ payload }: { payload: Payload }) {
+  const periodViews = payload.periodViews ?? [];
+  const [periodKey, setPeriodKey] = useState<string | null>(null);
+  const view = periodViews.find((v) => v.key === periodKey) ?? periodViews[0];
+  return (
+    <div role="tabpanel">
+      <SectionTitle>Analysis Approach / 分析方法</SectionTitle>
+      <Card>
+        <ul className="list-disc space-y-1.5 pl-5 text-sm">
+          {payload.approach.map((a) => (
+            <li key={a}>{a}</li>
+          ))}
+        </ul>
+      </Card>
+      {periodViews.length > 0 ? (
+        <PeriodPicker
+          id="comparison-period"
+          views={periodViews}
+          value={view?.key ?? ""}
+          onChange={setPeriodKey}
+        />
+      ) : null}
+      <ComparisonSection
+        comparison={view ? view.comparison : payload.comparison}
+      />
+      <BandsSection
+        bands={view ? view.bands : payload.bands}
+        bandEvalZh={payload.bandEvalZh}
+      />
+    </div>
+  );
+}
+
+// Trends tab: the seven charts render the selected period view's series
+// when the snapshot carries period views.
+function TrendsTab({ payload }: { payload: Payload }) {
+  const periodViews = payload.periodViews ?? [];
+  const [periodKey, setPeriodKey] = useState<string | null>(null);
+  const view = periodViews.find((v) => v.key === periodKey) ?? periodViews[0];
+  return (
+    <div role="tabpanel">
+      {periodViews.length > 0 ? (
+        <PeriodPicker
+          id="trends-period"
+          views={periodViews}
+          value={view?.key ?? ""}
+          onChange={setPeriodKey}
+        />
+      ) : null}
+      <ChartsSection charts={view ? view.charts : payload.charts} />
+    </div>
+  );
+}
 
 function ReportView({
   snapshot,
@@ -1420,26 +1946,9 @@ function ReportView({
         </div>
       ) : null}
 
-      {tab === "comparison" ? (
-        <div role="tabpanel">
-          <SectionTitle>Analysis Approach / 分析方法</SectionTitle>
-          <Card>
-            <ul className="list-disc space-y-1.5 pl-5 text-sm">
-              {p.approach.map((a) => (
-                <li key={a}>{a}</li>
-              ))}
-            </ul>
-          </Card>
-          <ComparisonSection payload={p} />
-          <BandsSection payload={p} />
-        </div>
-      ) : null}
+      {tab === "comparison" ? <ComparisonTab payload={p} /> : null}
 
-      {tab === "trends" ? (
-        <div role="tabpanel">
-          <ChartsSection payload={p} />
-        </div>
-      ) : null}
+      {tab === "trends" ? <TrendsTab payload={p} /> : null}
 
       {tab === "notes" ? (
         <div role="tabpanel">
