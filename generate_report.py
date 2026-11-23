@@ -246,6 +246,21 @@ def main() -> None:
                 return df
         return pd.DataFrame()
 
+    # Beta-test feedback: say plainly what was found, so a missing section
+    # in the report is explainable without reading the code.
+    _expected = ['dailyactivity.csv', 'dailysleep.csv', 'dailyreadiness.csv',
+                 'dailyspo2.csv', 'dailystress.csv', 'daytimestress.csv',
+                 'heartrate.csv', 'temperature.csv', 'sleepmodel.csv']
+    _found = {Path(rel).name.lower() for rel in dataframes}
+    _missing = [f for f in _expected if f not in _found]
+    if _found:
+        print(f"Found {len(_found)} CSV file(s) in {BASE}")
+    else:
+        print(f"WARNING: no CSV files found in {BASE} - the report will be empty. "
+              "Point --input-dir at the folder with your Oura export.")
+    if _missing:
+        print(f"Missing (related sections will be skipped): {', '.join(_missing)}")
+
     dailyactivity = df_by_filename('dailyactivity.csv')
     dailysleep = df_by_filename('dailysleep.csv')
     readiness = df_by_filename('dailyreadiness.csv')
@@ -687,7 +702,7 @@ def main() -> None:
         temp_daily = temp_daily.groupby('day_dt', as_index=False)['skin_temp'].mean()
     add_chart(temp_daily, 'day_dt', 'skin_temp', 'Skin Temperature (Daily Avg) / 皮膚溫度（日均）', 'Daily Average Skin Temperature', '#f4a261', 'temp.svg')
 
-    if 'ts' in daystress.columns:
+    if 'ts' in daystress.columns and 'stress_value' in daystress.columns and 'recovery_value' in daystress.columns:
         ds = daystress.dropna(subset=['ts']).copy()
         ds['day_dt'] = ds['ts'].dt.tz_convert('UTC').dt.date
         ds = ds.groupby('day_dt', as_index=False)[['stress_value', 'recovery_value']].mean()
@@ -701,14 +716,14 @@ def main() -> None:
 
     # Daily stress vs recovery from dailystress.csv (API has no daytime
     # stress time series; daily aggregates are the closest available signal).
-    if 'day_dt' in dailystress.columns and 'stress_high' in dailystress.columns:
+    if 'day_dt' in dailystress.columns and 'stress_high' in dailystress.columns and 'recovery_high' in dailystress.columns:
         ds = dailystress[['day_dt', 'stress_high', 'recovery_high']].dropna(subset=['day_dt']).sort_values('day_dt')
         if not ds.empty:
             xs = [str(x)[:10] for x in ds['day_dt'].tolist()]
             charts.append(('Stress vs Recovery (Daily) / 壓力與恢復（每日）', save_chart('stress_daily.svg', dual_line_svg(xs, (ds['stress_high'] / 60.0).tolist(), (ds['recovery_high'] / 60.0).tolist(), 'Daily Stress vs Recovery (minutes)'))))
 
     # Deep vs REM sleep minutes from sleepmodel.csv.
-    if 'day_dt' in sleepmodel.columns and 'deep_sleep_duration' in sleepmodel.columns:
+    if 'day_dt' in sleepmodel.columns and 'deep_sleep_duration' in sleepmodel.columns and 'rem_sleep_duration' in sleepmodel.columns:
         sm = sleepmodel[['day_dt', 'deep_sleep_duration', 'rem_sleep_duration']].dropna(subset=['day_dt']).sort_values('day_dt')
         if not sm.empty:
             xs = [str(x)[:10] for x in sm['day_dt'].tolist()]
