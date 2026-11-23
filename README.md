@@ -114,7 +114,11 @@ Suggested practice:
 
 ### Disclaimer
 
-This tool is for health education and screening support only, not for diagnosis, treatment, or emergency decisions.
+This tool is for health education and screening support only. It is not a
+medical device and does not provide diagnosis, treatment, or emergency
+guidance; its output is not medical advice. The developer and contributors
+accept no liability for reliance on generated reports. Please read the
+full [DISCLAIMER.md](DISCLAIMER.md) before use.
 
 ---
 
@@ -222,4 +226,6 @@ Q4. 可以自訂顏色和排版嗎？
 
 ### 免責聲明
 
-本工具僅供健康教育與早期篩檢輔助，不可作為診斷、治療或急症判斷依據。
+本工具僅供健康教育與早期篩檢輔助，不是醫療器材，不提供診斷、治療或
+急症判斷依據，產出內容不構成醫療建議；開發者與貢獻者不對信賴產出報告
+所生之結果負責。使用前請詳閱完整免責聲明：[DISCLAIMER.md](DISCLAIMER.md)。
