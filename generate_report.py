@@ -213,6 +213,257 @@ def risk_badge(level: str) -> str:
     return '<span class="badge good">Good / 穩定</span>'
 
 
+
+# ---------------------------------------------------------------------------
+# Estimated Resilience (added 2026-11): a transparent, documented estimate
+# inspired by the Oura app's Resilience feature. It is NOT Oura's proprietary
+# score. Method (v3): contributors over 14-day windows - nighttime recovery =
+# 70% sleep component (sleep score minus 8 points per hour below 7 h) + 30%
+# physiology component (HRV and lowest resting HR vs the wearer's own
+# baseline-month medians); daytime recovery from restorative minutes;
+# daytime stress load from stress minutes. The level index blends the 14-day
+# value (40%) with a 28-day value (60%). Bands: Limited <40, Adequate 40-54,
+# Solid 55-64, Strong 65-79, Exceptional >=80.
+# ---------------------------------------------------------------------------
+
+_RES_LEVELS = [('Exceptional', 80, '#2f9e44'), ('Strong', 65, '#12a594'),
+               ('Solid', 55, '#d9930d'), ('Adequate', 40, '#e8590c'),
+               ('Limited', 0, '#e03131')]
+
+
+def _res_level(v: float) -> str:
+    for name, lo, _c in _RES_LEVELS:
+        if v >= lo:
+            return name
+    return 'Limited'
+
+
+def _res_band_rec(v: float) -> str:
+    return 'Optimal' if v >= 80 else 'Good' if v >= 65 else 'Fair' if v >= 50 else 'Pay attention'
+
+
+def _res_band_stress(v: float) -> str:
+    return 'Low' if v < 33 else 'Moderate' if v < 66 else 'High'
+
+
+def compute_resilience(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
+                       sleepmodel: pd.DataFrame) -> dict | None:
+    """Return the v3 estimate dict, or None when history is insufficient."""
+    if dailystress.empty or 'day' not in dailystress.columns:
+        return None
+    st = dailystress.copy()
+    st['day'] = pd.to_datetime(st['day'], errors='coerce')
+    for c in ['stress_high', 'recovery_high']:
+        if c not in st.columns:
+            return None
+        st[c] = to_num(st[c])
+    st['stress_min'] = st['stress_high'] / 60.0
+    st['rec_min'] = st['recovery_high'] / 60.0
+    if 'day_summary' not in st.columns:
+        st['day_summary'] = ''
+    st = st.dropna(subset=['day']).sort_values('day')
+
+    sl = dailysleep.copy()
+    if not sl.empty and 'day' in sl.columns and 'score' in sl.columns:
+        sl['day'] = pd.to_datetime(sl['day'], errors='coerce')
+        sl['score'] = to_num(sl['score'])
+        st = st.merge(sl[['day', 'score']].rename(columns={'score': 'sleep_score'}),
+                      on='day', how='left')
+    else:
+        st['sleep_score'] = pd.NA
+
+    sm = sleepmodel.copy()
+    if not sm.empty and 'day' in sm.columns and 'total_sleep_duration' in sm.columns:
+        sm['day'] = pd.to_datetime(sm['day'], errors='coerce')
+        for c in ['total_sleep_duration', 'average_hrv', 'lowest_heart_rate']:
+            if c in sm.columns:
+                sm[c] = to_num(sm[c])
+        sm = sm.sort_values('total_sleep_duration').groupby('day').tail(1)
+        keep = ['day', 'total_sleep_duration'] + [c for c in ['average_hrv', 'lowest_heart_rate'] if c in sm.columns]
+        st = st.merge(sm[keep], on='day', how='left')
+    else:
+        st['total_sleep_duration'] = pd.NA
+    st['sleep_hrs'] = st['total_sleep_duration'] / 3600.0
+
+    if len(st) < 28:
+        return None
+
+    # Baseline month: the first 31 days when the dataset reaches >=45 days
+    # back; otherwise the earliest days before the final 28 (>=7 required).
+    span_days = (st['day'].max() - st['day'].min()).days
+    if span_days >= 45:
+        base = st[st['day'] <= st['day'].min() + pd.Timedelta(days=30)]
+    else:
+        base = st.iloc[:-28]
+    if len(base) < 7 or 'average_hrv' not in st.columns or 'lowest_heart_rate' not in st.columns:
+        return None
+    hrv_base = float(base['average_hrv'].median())
+    rhr_base = float(base['lowest_heart_rate'].median())
+    if pd.isna(hrv_base) or pd.isna(rhr_base):
+        return None
+
+    def _night_sleep(r):
+        if pd.isna(r['sleep_score']):
+            return float('nan')
+        hrs = r['sleep_hrs'] if not pd.isna(r['sleep_hrs']) else 7.0
+        return float(r['sleep_score']) - max(0.0, 7.0 - hrs) * 8.0
+
+    st['ns'] = st.apply(_night_sleep, axis=1)
+    st['phys'] = (50 + (st['average_hrv'] - hrv_base) * 1.5
+                  - (st['lowest_heart_rate'] - rhr_base) * 3.0).clip(0, 100)
+    st['night'] = 0.7 * st['ns'] + 0.3 * st['phys']
+    st['rec_score'] = (st['rec_min'] / 120 * 100).clip(0, 100)
+    st['stress_score'] = (st['stress_min'] / 300 * 100).clip(0, 100)
+    for c in ['night', 'rec_score', 'stress_score']:
+        st[c + '_14'] = st[c].rolling(14, min_periods=12).mean()
+        st[c + '_28'] = st[c].rolling(28, min_periods=24).mean()
+    st['idx14'] = 0.4 * st.night_14 + 0.3 * st.rec_score_14 + 0.3 * (100 - st.stress_score_14)
+    st['idx28'] = 0.4 * st.night_28 + 0.3 * st.rec_score_28 + 0.3 * (100 - st.stress_score_28)
+    st['index'] = 0.4 * st.idx14 + 0.6 * st.idx28
+    st['stress_r'] = st['stress_min'].rolling(14, min_periods=12).mean()
+    st['rec_r'] = st['rec_min'].rolling(14, min_periods=12).mean()
+
+    win = st.tail(14)
+    last = st.dropna(subset=['index']).iloc[-1]
+    night_v = float(win['night'].mean())
+    rec_v = float(win['rec_score'].mean())
+    smin = float(win['stress_min'].mean())
+    return {
+        'index': round(float(last['index']), 1),
+        'level': _res_level(float(last['index'])),
+        'window': (str(win['day'].min().date()), str(win['day'].max().date())),
+        'contributors': {
+            'nighttime_recovery': (round(night_v, 1), _res_band_rec(night_v)),
+            'daytime_recovery': (round(rec_v, 1), _res_band_rec(rec_v), int(round(float(win['rec_min'].mean())))),
+            'daytime_stress_load': (round(smin / 300 * 100, 1), _res_band_stress(smin / 300 * 100), int(round(smin))),
+        },
+        'trend': [(str(r['day'].date()), round(float(r['index']), 1))
+                  for _, r in st.dropna(subset=['index']).tail(14).iterrows()],
+        'map': [(str(r['day'].date()), round(float(r['stress_r']), 1), round(float(r['rec_r']), 1))
+                for _, r in win.iterrows() if not pd.isna(r['stress_r'])],
+        'stress_days': [(str(r['day'].date()), float(r['stress_min']), float(r['rec_min']),
+                         str(r.get('day_summary') or '')) for _, r in win.iterrows()],
+        'hrv_base': hrv_base, 'rhr_base': rhr_base,
+    }
+
+
+def resilience_trend_svg(res: dict) -> str:
+    w, h, pad_l, pad_b, pad_t = 560, 240, 8, 22, 10
+    plot_w, plot_h = w - pad_l - 70, h - pad_b - pad_t
+    bands = [('Exceptional', 80, 100, '#e6f4ea'), ('Strong', 65, 80, '#e0f2f1'),
+             ('Solid', 55, 65, '#fdf3d7'), ('Adequate', 40, 55, '#fdebd7'),
+             ('Limited', 0, 40, '#fbe3e3')]
+    out = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+    for name, lo, hi, color in bands:
+        y = pad_t + (100 - hi) / 100 * plot_h
+        bh = (hi - lo) / 100 * plot_h
+        out.append(f'<rect x="{pad_l}" y="{y:.0f}" width="{plot_w}" height="{bh:.0f}" fill="{color}"/>')
+        out.append(f'<text x="{pad_l + plot_w + 6}" y="{y + bh / 2 + 4:.0f}" font-size="11" fill="#555">{name}</text>')
+    pts = []
+    n = max(len(res['trend']) - 1, 1)
+    for i, (d, v) in enumerate(res['trend']):
+        x = pad_l + i / n * plot_w
+        y = pad_t + (100 - v) / 100 * plot_h
+        pts.append(f'{x:.0f},{y:.0f}')
+        out.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="#333"/>')
+        if i in (0, len(res['trend']) - 1):
+            out.append(f'<text x="{x:.0f}" y="{h - 6}" font-size="10" fill="#555" text-anchor="middle">{d[5:]}</text>')
+    out.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="#333" stroke-width="1.6"/>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
+def resilience_map_svg(res: dict) -> str:
+    w, h, pad = 560, 330, 30
+    plot_w, plot_h = w - 2 * pad, h - 2 * pad
+    left = [0.05, 0.20, 0.35, 0.50]
+    ctrl = [0.15, 0.30, 0.45, 0.60]
+    right = [0.45, 0.60, 0.75, 0.90]
+    colors = ['#2f9e44', '#12a594', '#d9930d', '#e8590c', '#e03131']
+    names = ['Exceptional', 'Strong', 'Solid', 'Adequate', 'Limited']
+    out = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+    out.append(f'<line x1="{pad + plot_w / 2}" y1="{pad}" x2="{pad + plot_w / 2}" y2="{pad + plot_h}" stroke="#bbb" stroke-width="1"/>')
+    out.append(f'<line x1="{pad}" y1="{pad + 0.38 * plot_h}" x2="{pad + plot_w}" y2="{pad + 0.38 * plot_h}" stroke="#bbb" stroke-width="1"/>')
+    for i in range(4):
+        x0, y0 = pad, pad + left[i] * plot_h
+        cx, cy = pad + plot_w / 2, pad + ctrl[i] * plot_h
+        x1, y1 = pad + plot_w, pad + right[i] * plot_h
+        out.append(f'<path d="M {x0} {y0:.0f} Q {cx} {cy:.0f} {x1} {y1:.0f}" fill="none" stroke="#888" stroke-width="1.4" stroke-dasharray="5 4"/>')
+    for i, (name, color) in enumerate(zip(names, colors)):
+        mid = (left[i - 1] + ctrl[i - 1]) / 2 if i > 0 else 0.02
+        y = pad + (mid + 0.055) * plot_h if i > 0 else pad + 0.09 * plot_h
+        if i == 4:
+            y = pad + 0.86 * plot_h
+        out.append(f'<text x="{pad + 0.14 * plot_w}" y="{y:.0f}" font-size="11" font-weight="600" fill="{color}">{name}</text>')
+    out.append(f'<text x="{w / 2}" y="16" font-size="11" fill="#555" text-anchor="middle">High recovery</text>')
+    out.append(f'<text x="{w / 2}" y="{h - 6}" font-size="11" fill="#555" text-anchor="middle">Low recovery</text>')
+    out.append(f'<text x="{pad}" y="{pad + 0.38 * plot_h - 6}" font-size="11" fill="#555">Low stress</text>')
+    out.append(f'<text x="{pad + plot_w}" y="{pad + 0.38 * plot_h - 6}" font-size="11" fill="#555" text-anchor="end">High stress</text>')
+    pts = []
+    for i, (d, s, r) in enumerate(res['map']):
+        x = pad + min(max(s, 0), 360) / 360 * plot_w
+        y = pad + (1 - min(max(r + 48, 0), 240) / 240) * plot_h
+        pts.append((x, y, d))
+    for i in range(len(pts) - 1):
+        out.append(f'<line x1="{pts[i][0]:.0f}" y1="{pts[i][1]:.0f}" x2="{pts[i + 1][0]:.0f}" y2="{pts[i + 1][1]:.0f}" stroke="#666" stroke-width="1.4"/>')
+    for i, (x, y, d) in enumerate(pts):
+        if i == len(pts) - 1:
+            out.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="7" fill="#ff4f87"/>')
+            out.append(f'<text x="{x:.0f}" y="{y - 12:.0f}" font-size="10" fill="#ff4f87" text-anchor="middle">{d[5:]}</text>')
+        else:
+            out.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3.4" fill="#fff" stroke="#666" stroke-width="1.4"/>')
+            if i == 0:
+                out.append(f'<text x="{x:.0f}" y="{y - 10:.0f}" font-size="10" fill="#555" text-anchor="middle">{d[5:]}</text>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
+def resilience_section(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
+                       sleepmodel: pd.DataFrame) -> str:
+    res = None
+    try:
+        res = compute_resilience(dailystress, dailysleep, sleepmodel)
+    except Exception:
+        res = None
+    head = '<h2>6) Estimated Resilience / 估算韌性</h2>'
+    if res is None:
+        return (head + '<div class="card"><p>This section needs at least 28 days of '
+                'daily stress, sleep, and sleep-session (HRV / resting HR) data. '
+                '本節需要至少 28 天的每日壓力、睡眠與睡眠時段（HRV／靜息心率）資料。</p></div>')
+    c = res['contributors']
+    rows = ''.join([
+        f"<tr><td>Nighttime recovery 夜間恢復</td><td>{c['nighttime_recovery'][0]}</td><td>{c['nighttime_recovery'][1]}</td></tr>",
+        f"<tr><td>Daytime recovery 日間恢復</td><td>{c['daytime_recovery'][0]}</td><td>{c['daytime_recovery'][1]} (avg {c['daytime_recovery'][2]} min/day)</td></tr>",
+        f"<tr><td>Daytime stress load 日間壓力負荷</td><td>{c['daytime_stress_load'][0]}</td><td>{c['daytime_stress_load'][1]} (avg {c['daytime_stress_load'][2]} min/day)</td></tr>",
+    ])
+    tot_s = sum(d[1] for d in res['stress_days'])
+    tot_r = sum(d[2] for d in res['stress_days'])
+    bars = []
+    max_min = max(max(d[1], d[2]) for d in res['stress_days']) or 1
+    for d, s, r, label in res['stress_days']:
+        chip = f' <span class="badge">{label}</span>' if label else ''
+        bars.append(
+            f'<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:12px">'
+            f'<span style="width:44px">{d[5:]}</span>'
+            f'<span style="display:inline-block;height:9px;background:#e8590c;width:{s / max_min * 150:.0f}px"></span>'
+            f'<span style="width:86px">stress {s:.0f}m</span>'
+            f'<span style="display:inline-block;height:9px;background:#2f9e44;width:{r / max_min * 150:.0f}px"></span>'
+            f'<span>recovery {r:.0f}m</span>{chip}</div>')
+    return f"""{head}
+    <div class="card">
+      <p style="font-size:18px"><b>Estimated level / 估算等級：{res['level']}</b> (index {res['index']}, window {res['window'][0]} to {res['window'][1]})</p>
+      <p class="muted">A transparent estimate computed by this tool — not Oura's official Resilience score. 本工具之透明估算，非 Oura 官方韌性分數。</p>
+      <table><tr><th>Contributor 貢獻因子</th><th>Score</th><th>Rating 評級</th></tr>{rows}</table>
+      <h3>Trend / 趨勢</h3>{resilience_trend_svg(res)}
+      <h3>Map / 分佈圖</h3>{resilience_map_svg(res)}
+      <p class="muted footnote-sm">Map points are 14-day rolling averages on fixed scales (stress 0-360 min, recovery 0-240 min); the pink dot is the most recent day. A fixed display offset is applied to the recovery axis so the trajectory registers against the level bands, as on Oura's map (whose recovery axis is normalized rather than raw minutes). The four dashed curves are the boundaries between the five Resilience levels. 地圖各點為 14 日滾動平均，採固定尺度；粉紅點為最近一日；恢復軸加上固定顯示偏移以對應等級曲線；四條虛線為五個韌性等級之分界。</p>
+      <h3>Stress &amp; Recovery (last 14 days) / 壓力與恢復（近 14 日）</h3>
+      <p>Stress total {tot_s / 60:.1f} h · Recovery total {tot_r / 60:.1f} h · Daily average stress {tot_s / 14:.0f} min, recovery {tot_r / 14:.0f} min</p>
+      {''.join(bars)}
+      <p class="muted footnote-sm">Method v3: nighttime recovery = 70% sleep component (sleep score - 8 points per hour below 7 h) + 30% physiology (50 + 1.5 per ms HRV above your baseline-month median of {res['hrv_base']:.0f} ms - 3 per bpm lowest resting HR above {res['rhr_base']:.0f} bpm, clipped 0-100). Daytime recovery score = avg recovery min / 120 x 100; stress load score = avg stress min / 300 x 100. Index = 0.4 x nighttime + 0.3 x daytime recovery + 0.3 x (100 - stress load), blending 14-day (40%) and 28-day (60%) windows. Levels: Limited &lt;40, Adequate 40-54, Solid 55-64, Strong 65-79, Exceptional &gt;=80.</p>
+    </div>"""
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='Generate preventive-health HTML report from Oura-style CSV exports.')
     p.add_argument('--input-dir', default='.', help='Folder containing exported datasets (searched recursively).')
@@ -770,6 +1021,8 @@ def main() -> None:
 </ul>
 """
 
+    resilience_html = resilience_section(dailystress, dailysleep, sleepmodel)
+
     html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -865,7 +1118,9 @@ def main() -> None:
     <h2>5) Trend Graphs / 趨勢圖</h2>
     <div class=\"chart-grid\">{''.join([f'<div class="chart-item card"><h3>{t}</h3>{(ASSET_DIR/f).read_text(encoding="utf-8")}</div>' for t, f in charts])}</div>
 
-    <h2>6) Medical Inference, Prediction, and Action Plan / 醫學推測、預測與行動建議</h2>
+    {resilience_html}
+
+    <h2>7) Medical Inference, Prediction, and Action Plan / 醫學推測、預測與行動建議</h2>
     <div class=\"card\">{rec_cards_html(rec_rows)}</div>
     <div class=\"card\" style=\"margin-top:10px;\">
       <p><b>Summary / 總結</b></p>
@@ -878,7 +1133,7 @@ def main() -> None:
     </div>
     <p class=\"muted footnote-sm\">Priority is ranked by: medical importance + feasibility + risk level (High/Moderate/Low). This section is decision-support, not a diagnosis.</p>
 
-    <h2>7) References / 參考來源</h2>
+    <h2>8) References / 參考來源</h2>
     <div class=\"card\">{sources_html}</div>
 
     <p class=\"muted footnote-sm\">Medical disclaimer: This report was generated by an unofficial open-source tool for health education and early screening support only. It is not a medical device, and it does not diagnose, treat, cure, or prevent any disease or condition; nothing in it is medical advice, and no doctor-patient relationship is created. Wearable data can be inaccurate or incomplete, and the automated interpretations here may be wrong; they are provided &quot;as is&quot; without warranties of any kind, and the developer and contributors accept no liability for reliance on this report. Always seek the advice of a qualified clinician with any questions about a medical condition, and never disregard professional advice or delay seeking it because of this report. If you think you may have a medical emergency, call your local emergency number immediately. This tool is not affiliated with, endorsed by, or sponsored by Oura Health Oy. See DISCLAIMER.md in the project repository for the full disclaimer.</p>

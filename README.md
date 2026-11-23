@@ -73,6 +73,15 @@ app source is in [`app/`](app/), with install instructions in
 seed data only — a real person's report values, CSVs, and generated
 reports must never be committed to this repository.
 
+### Estimated Resilience (in the HTML report)
+
+The Python report (`generate_report.py`) also computes the same transparent
+resilience estimate as a report section (section 6), with the contributors
+table, Trend and Map charts, and a Stress & Recovery summary for the last
+14 days. It needs at least 28 days of daily stress, sleep, and sleep-session
+(HRV / resting HR) data; with less history the section prints a short note
+and the rest of the report is unaffected.
+
 ### Estimated Resilience (in the app)
 
 The app's Resilience tab shows an **Estimated Resilience**: a
