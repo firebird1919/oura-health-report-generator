@@ -77,10 +77,14 @@ reports must never be committed to this repository.
 
 The Python report (`generate_report.py`) also computes the same transparent
 resilience estimate as a report section (section 6), with the contributors
-table, Trend and Map charts, and a Stress & Recovery summary for the last
-14 days. It needs at least 28 days of daily stress, sleep, and sleep-session
-(HRV / resting HR) data; with less history the section prints a short note
-and the rest of the report is unaffected.
+table, Trend and Map charts, and per-day Stress & Recovery bars. Data rule:
+all computations use the maximum data available, with a minimum of 7 days.
+Daily detail is organized into weekly periods — the default view shows the
+past week plus the days of the current period, and earlier weeks are one
+click away in the period dropdown. With 7–27 days the estimate runs
+provisionally on the 14-day window (labeled "limited history"); with less
+than 7 days the section prints a short note and the rest of the report is
+unaffected.
 
 ### Tabbed layout (HTML report)
 

@@ -285,17 +285,20 @@ def compute_resilience(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
         st['total_sleep_duration'] = pd.NA
     st['sleep_hrs'] = st['total_sleep_duration'] / 3600.0
 
-    if len(st) < 28:
+    if len(st) < 7:
         return None
+    limited_history = len(st) < 28
 
     # Baseline month: the first 31 days when the dataset reaches >=45 days
     # back; otherwise the earliest days before the final 28 (>=7 required).
     span_days = (st['day'].max() - st['day'].min()).days
     if span_days >= 45:
         base = st[st['day'] <= st['day'].min() + pd.Timedelta(days=30)]
-    else:
+    elif len(st) >= 35:
         base = st.iloc[:-28]
-    if len(base) < 7 or 'average_hrv' not in st.columns or 'lowest_heart_rate' not in st.columns:
+    else:
+        base = st.iloc[:max(3, len(st) // 4)]
+    if len(base) < 3 or 'average_hrv' not in st.columns or 'lowest_heart_rate' not in st.columns:
         return None
     hrv_base = float(base['average_hrv'].median())
     rhr_base = float(base['lowest_heart_rate'].median())
@@ -314,12 +317,16 @@ def compute_resilience(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
     st['night'] = 0.7 * st['ns'] + 0.3 * st['phys']
     st['rec_score'] = (st['rec_min'] / 120 * 100).clip(0, 100)
     st['stress_score'] = (st['stress_min'] / 300 * 100).clip(0, 100)
+    mp14 = 12 if len(st) >= 14 else max(5, len(st) - 2)
     for c in ['night', 'rec_score', 'stress_score']:
-        st[c + '_14'] = st[c].rolling(14, min_periods=12).mean()
+        st[c + '_14'] = st[c].rolling(14, min_periods=mp14).mean()
         st[c + '_28'] = st[c].rolling(28, min_periods=24).mean()
     st['idx14'] = 0.4 * st.night_14 + 0.3 * st.rec_score_14 + 0.3 * (100 - st.stress_score_14)
     st['idx28'] = 0.4 * st.night_28 + 0.3 * st.rec_score_28 + 0.3 * (100 - st.stress_score_28)
-    st['index'] = 0.4 * st.idx14 + 0.6 * st.idx28
+    if limited_history:
+        st['index'] = st['idx14']
+    else:
+        st['index'] = 0.4 * st.idx14 + 0.6 * st.idx28
     st['stress_r'] = st['stress_min'].rolling(14, min_periods=12).mean()
     st['rec_r'] = st['rec_min'].rolling(14, min_periods=12).mean()
 
@@ -343,6 +350,13 @@ def compute_resilience(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
                 for _, r in win.iterrows() if not pd.isna(r['stress_r'])],
         'stress_days': [(str(r['day'].date()), float(r['stress_min']), float(r['rec_min']),
                          str(r.get('day_summary') or '')) for _, r in win.iterrows()],
+        'daily': [(str(r['day'].date()),
+                   None if pd.isna(r['index']) else round(float(r['index']), 1),
+                   None if pd.isna(r['stress_r']) else round(float(r['stress_r']), 1),
+                   None if pd.isna(r['rec_r']) else round(float(r['rec_r']), 1),
+                   float(r['stress_min']), float(r['rec_min']),
+                   str(r.get('day_summary') or '')) for _, r in st.iterrows()],
+        'limited_history': limited_history,
         'hrv_base': hrv_base, 'rhr_base': rhr_base,
     }
 
@@ -427,40 +441,74 @@ def resilience_section(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
         res = None
     head = '<h2>6) Estimated Resilience / 估算韌性</h2>'
     if res is None:
-        return (head + '<div class="card"><p>This section needs at least 28 days of '
+        return (head + '<div class="card"><p>This section needs at least 7 days of '
                 'daily stress, sleep, and sleep-session (HRV / resting HR) data. '
-                '本節需要至少 28 天的每日壓力、睡眠與睡眠時段（HRV／靜息心率）資料。</p></div>')
+                '本節需要至少 7 天的每日壓力、睡眠與睡眠時段（HRV／靜息心率）資料。</p></div>')
     c = res['contributors']
     rows = ''.join([
         f"<tr><td>Nighttime recovery 夜間恢復</td><td>{c['nighttime_recovery'][0]}</td><td>{c['nighttime_recovery'][1]}</td></tr>",
         f"<tr><td>Daytime recovery 日間恢復</td><td>{c['daytime_recovery'][0]}</td><td>{c['daytime_recovery'][1]} (avg {c['daytime_recovery'][2]} min/day)</td></tr>",
         f"<tr><td>Daytime stress load 日間壓力負荷</td><td>{c['daytime_stress_load'][0]}</td><td>{c['daytime_stress_load'][1]} (avg {c['daytime_stress_load'][2]} min/day)</td></tr>",
     ])
+    def _bars(days):
+        if not days:
+            return '<p class="muted">No data.</p>'
+        mx = max(max(d[1], d[2]) for d in days) or 1
+        out = []
+        for d, s, r, label in days:
+            chip = f' <span class="badge">{label}</span>' if label else ''
+            out.append(
+                f'<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:12px">'
+                f'<span style="width:44px">{d[5:]}</span>'
+                f'<span style="display:inline-block;height:9px;background:#e8590c;width:{s / mx * 150:.0f}px"></span>'
+                f'<span style="width:86px">stress {s:.0f}m</span>'
+                f'<span style="display:inline-block;height:9px;background:#2f9e44;width:{r / mx * 150:.0f}px"></span>'
+                f'<span>recovery {r:.0f}m</span>{chip}</div>')
+        return ''.join(out)
+
+    daily = res['daily']
+    weeks = [daily[i:i + 7] for i in range(0, len(daily), 7)]
+    if len(weeks) >= 2:
+        default_days = weeks[-2] + weeks[-1]
+    else:
+        default_days = daily
+    period_defs = [('Latest — past week + current period 最新（上週＋本期）', default_days)]
+    for i, wk in enumerate(reversed(weeks)):
+        period_defs.append((f'Week {len(weeks) - i} · {wk[0][0]} to {wk[-1][0]}', wk))
+    period_html = []
+    options = []
+    for pi, (label, days) in enumerate(period_defs):
+        sub = {'trend': [(d[0], d[1]) for d in days if d[1] is not None],
+               'map': [(d[0], d[2], d[3]) for d in days if d[2] is not None]}
+        sdays = [(d[0], d[4], d[5], d[6]) for d in days]
+        ts = sum(d[1] for d in sdays)
+        tr = sum(d[2] for d in sdays)
+        disp = 'block' if pi == 0 else 'none'
+        period_html.append(
+            f'<div class="res-period" id="resperiod-{pi}" style="display:{disp}">'
+            f'<h3>Trend / 趨勢</h3>{resilience_trend_svg(sub) if sub["trend"] else "<p class=\"muted\">Not enough history yet for an index in this period. 本期歷史資料尚不足以計算指數。</p>"}'
+            f'<h3>Map / 分佈圖</h3>{resilience_map_svg(sub) if sub["map"] else "<p class=\"muted\">Not enough history yet for the map in this period. 本期歷史資料尚不足以繪製地圖。</p>"}'
+            f'<h3>Stress &amp; Recovery / 壓力與恢復</h3>'
+            f'<p>Stress total {ts / 60:.1f} h · Recovery total {tr / 60:.1f} h · Daily average stress {ts / len(sdays):.0f} min, recovery {tr / len(sdays):.0f} min</p>'
+            f'{_bars(sdays)}</div>')
+        options.append(f'<option value="resperiod-{pi}">{label}</option>')
+    onchange = ("(document.querySelectorAll('.res-period').forEach(p=>p.style.display='none'),"
+                "document.getElementById(this.value).style.display='block')")
+    periods_block = (f'<p><label>Period 期間：<select onchange="{onchange}">'
+                     + ''.join(options) + '</select></label></p>' + ''.join(period_html))
+    limited_note = ('<p class="warn">Limited history: with fewer than 28 days the estimate uses the 14-day window only and a shorter baseline — treat it as provisional. 歷史資料少於 28 天，指數僅採 14 日窗口與較短基線，請視為暫定值。</p>' if res.get('limited_history') else '')
     tot_s = sum(d[1] for d in res['stress_days'])
     tot_r = sum(d[2] for d in res['stress_days'])
-    bars = []
-    max_min = max(max(d[1], d[2]) for d in res['stress_days']) or 1
-    for d, s, r, label in res['stress_days']:
-        chip = f' <span class="badge">{label}</span>' if label else ''
-        bars.append(
-            f'<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:12px">'
-            f'<span style="width:44px">{d[5:]}</span>'
-            f'<span style="display:inline-block;height:9px;background:#e8590c;width:{s / max_min * 150:.0f}px"></span>'
-            f'<span style="width:86px">stress {s:.0f}m</span>'
-            f'<span style="display:inline-block;height:9px;background:#2f9e44;width:{r / max_min * 150:.0f}px"></span>'
-            f'<span>recovery {r:.0f}m</span>{chip}</div>')
+    bars = _bars(res['stress_days'])
     return f"""{head}
     <div class="card">
       <p><b>Why resilience? 為何以韌性為核心？</b> Health resilience is the body's capacity to respond to stress, recover equilibrium, and repair damage — health is not merely the absence of disease, but the presence of this capacity. This report is organized around measuring it, detecting its decline, and supporting its repair. 健康韌性是身體回應壓力、恢復平衡、修復損傷的能力；健康不只是沒有疾病，而是擁有這樣的能力。本報告即圍繞「測量韌性、察覺衰退、支持修復」而設計。(Framework: Lu MC, keynote on Health Resilience — see References.)</p>
       <p style="font-size:18px"><b>Estimated level / 估算等級：{res['level']}</b> (index {res['index']}, window {res['window'][0]} to {res['window'][1]})</p>
       <p class="muted">A transparent estimate computed by this tool — not Oura's official Resilience score. 本工具之透明估算，非 Oura 官方韌性分數。</p>
+      {limited_note}
       <table><tr><th>Contributor 貢獻因子</th><th>Score</th><th>Rating 評級</th></tr>{rows}</table>
-      <h3>Trend / 趨勢</h3>{resilience_trend_svg(res)}
-      <h3>Map / 分佈圖</h3>{resilience_map_svg(res)}
+      {periods_block}
       <p class="muted footnote-sm">Map points are 14-day rolling averages on fixed scales (stress 0-360 min, recovery 0-240 min); the pink dot is the most recent day. A fixed display offset is applied to the recovery axis so the trajectory registers against the level bands, as on Oura's map (whose recovery axis is normalized rather than raw minutes). The four dashed curves are the boundaries between the five Resilience levels. 地圖各點為 14 日滾動平均，採固定尺度；粉紅點為最近一日；恢復軸加上固定顯示偏移以對應等級曲線；四條虛線為五個韌性等級之分界。</p>
-      <h3>Stress &amp; Recovery (last 14 days) / 壓力與恢復（近 14 日）</h3>
-      <p>Stress total {tot_s / 60:.1f} h · Recovery total {tot_r / 60:.1f} h · Daily average stress {tot_s / 14:.0f} min, recovery {tot_r / 14:.0f} min</p>
-      {''.join(bars)}
       <p class="muted footnote-sm">Method v3: nighttime recovery = 70% sleep component (sleep score - 8 points per hour below 7 h) + 30% physiology (50 + 1.5 per ms HRV above your baseline-month median of {res['hrv_base']:.0f} ms - 3 per bpm lowest resting HR above {res['rhr_base']:.0f} bpm, clipped 0-100). Daytime recovery score = avg recovery min / 120 x 100; stress load score = avg stress min / 300 x 100. Index = 0.4 x nighttime + 0.3 x daytime recovery + 0.3 x (100 - stress load), blending 14-day (40%) and 28-day (60%) windows. Levels: Limited &lt;40, Adequate 40-54, Solid 55-64, Strong 65-79, Exceptional &gt;=80.</p>
     </div>"""
 
