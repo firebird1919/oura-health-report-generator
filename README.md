@@ -62,6 +62,16 @@ python3 generate_report.py \
 - `final_report.html`
 - `report_assets/` (SVG charts)
 
+### Install as a Muse App
+
+The report can also live as a private Muse app with a history of dated
+report snapshots, following the same template pattern as the
+`verif_benefits` and `redeem_benefits` apps. The complete app source is
+in [`app/`](app/), with install instructions in
+[`app/INSTALL.md`](app/INSTALL.md). The app template ships with sample
+seed data only — a real person's report values, CSVs, and generated
+reports must never be committed to this repository.
+
 ### Common Input CSV Names
 
 - `dailyactivity.csv`
