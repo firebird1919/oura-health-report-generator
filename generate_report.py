@@ -451,6 +451,7 @@ def resilience_section(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
             f'<span>recovery {r:.0f}m</span>{chip}</div>')
     return f"""{head}
     <div class="card">
+      <p><b>Why resilience? 為何以韌性為核心？</b> Health resilience is the body's capacity to respond to stress, recover equilibrium, and repair damage — health is not merely the absence of disease, but the presence of this capacity. This report is organized around measuring it, detecting its decline, and supporting its repair. 健康韌性是身體回應壓力、恢復平衡、修復損傷的能力；健康不只是沒有疾病，而是擁有這樣的能力。本報告即圍繞「測量韌性、察覺衰退、支持修復」而設計。(Framework: Lu MC, keynote on Health Resilience — see References.)</p>
       <p style="font-size:18px"><b>Estimated level / 估算等級：{res['level']}</b> (index {res['index']}, window {res['window'][0]} to {res['window'][1]})</p>
       <p class="muted">A transparent estimate computed by this tool — not Oura's official Resilience score. 本工具之透明估算，非 Oura 官方韌性分數。</p>
       <table><tr><th>Contributor 貢獻因子</th><th>Score</th><th>Rating 評級</th></tr>{rows}</table>
@@ -462,6 +463,76 @@ def resilience_section(dailystress: pd.DataFrame, dailysleep: pd.DataFrame,
       {''.join(bars)}
       <p class="muted footnote-sm">Method v3: nighttime recovery = 70% sleep component (sleep score - 8 points per hour below 7 h) + 30% physiology (50 + 1.5 per ms HRV above your baseline-month median of {res['hrv_base']:.0f} ms - 3 per bpm lowest resting HR above {res['rhr_base']:.0f} bpm, clipped 0-100). Daytime recovery score = avg recovery min / 120 x 100; stress load score = avg stress min / 300 x 100. Index = 0.4 x nighttime + 0.3 x daytime recovery + 0.3 x (100 - stress load), blending 14-day (40%) and 28-day (60%) windows. Levels: Limited &lt;40, Adequate 40-54, Solid 55-64, Strong 65-79, Exceptional &gt;=80.</p>
     </div>"""
+
+
+
+
+def _score_band(v) -> str:
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return 'N/A'
+    return 'Optimal' if v >= 85 else 'Good' if v >= 70 else 'Fair' if v >= 60 else 'Pay attention'
+
+
+def _ring_svg(value, label: str) -> str:
+    r = 34
+    circ = 2 * math.pi * r
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        frac, text = 0.0, 'N/A'
+    else:
+        frac, text = max(0.0, min(100.0, float(value))) / 100.0, f'{float(value):.0f}'
+    return (
+        f'<div style="text-align:center">'
+        f'<svg width="92" height="92" viewBox="0 0 92 92">'
+        f'<circle cx="46" cy="46" r="{r}" fill="none" stroke="#e5e5e5" stroke-width="8"/>'
+        f'<circle cx="46" cy="46" r="{r}" fill="none" stroke="#333" stroke-width="8" '
+        f'stroke-linecap="round" stroke-dasharray="{frac * circ:.0f} {circ:.0f}" '
+        f'transform="rotate(-90 46 46)"/>'
+        f'<text x="46" y="52" font-size="20" font-weight="700" text-anchor="middle" fill="#333">{text}</text>'
+        f'</svg>'
+        f'<div style="font-size:13px">{label}<br/><span class="muted">{_score_band(value)}</span></div></div>')
+
+
+def summary_section(sleep_mean, readiness_mean, vitals, attention, stress14,
+                    top_actions, window_text: str) -> str:
+    """Summary tab: score rings, vitals with risk dots, needs-attention,
+    stress & recovery totals, and the top two actions (mirrors the app)."""
+    lvl_color = {'green': '#2f9e44', 'yellow': '#d9930d', 'red': '#e03131'}
+    vitals_html = ''.join(
+        f'<span style="display:inline-block;margin:3px 10px 3px 0;font-size:13px">'
+        f'<span class="vital-dot" style="background:{lvl_color.get(lvl, "#999")}"></span>'
+        f'{label}: <b>{val}</b></span>'
+        for label, val, lvl in vitals)
+    if attention:
+        att_html = '<ul>' + ''.join(
+            f'<li><span class="vital-dot" style="background:{lvl_color.get(lvl, "#999")}"></span>{label}</li>'
+            for label, lvl in attention) + '</ul>'
+    else:
+        att_html = '<p class="good">All tracked vitals are in the green band. 所有追蹤指標皆在綠色區間。</p>'
+    if stress14:
+        tot_s, tot_r, last_label = stress14
+        chip = f' · Latest day 最新一日：{last_label}' if last_label else ''
+        stress_html = (f'<p style="font-size:14px">Stress total 壓力總時數 <b>{tot_s / 60:.1f} h</b> · '
+                       f'Recovery total 恢復總時數 <b>{tot_r / 60:.1f} h</b><br/>'
+                       f'Daily average 每日平均：stress {tot_s / 14:.0f} min · recovery {tot_r / 14:.0f} min{chip}</p>')
+    else:
+        stress_html = '<p class="muted">Not enough daily stress data in this window. 本區間每日壓力資料不足。</p>'
+    if top_actions:
+        act_html = '<ol>' + ''.join(
+            f'<li><b>{dom}</b> <span class="muted">({risk})</span><br/>{act}</li>'
+            for dom, risk, act in top_actions) + '</ol>'
+    else:
+        act_html = '<p class="muted">No recommendations available. 暫無建議。</p>'
+    return f"""
+    <div class="card">
+      <div class="ring-wrap">{_ring_svg(sleep_mean, 'Sleep 睡眠')}{_ring_svg(readiness_mean, 'Readiness 準備度')}</div>
+      <p style="margin-top:10px">{vitals_html}</p>
+    </div>
+    <h3>Needs Attention / 需要關注</h3>
+    <div class="card">{att_html}</div>
+    <h3>Stress &amp; Recovery (last 14 days) / 壓力與恢復（近 14 日）</h3>
+    <div class="card">{stress_html}</div>
+    <h3>Top Actions / 首要行動</h3>
+    <div class="card">{act_html}</div>"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -1018,8 +1089,35 @@ def main() -> None:
   <li><a href=\"https://medlineplus.gov/lab-tests/pulse-oximetry\" target=\"_blank\">MedlinePlus: Pulse oximetry normal range</a></li>
   <li><a href=\"https://support.ouraring.com/hc/en-us/articles/360025445574-An-Introduction-to-Your-Sleep-Score\" target=\"_blank\">Oura: Score bands</a></li>
   <li><a href=\"https://support.ouraring.com/hc/en-us/articles/360025587493\" target=\"_blank\">Oura: Temperature baseline/deviation interpretation</a></li>
+  <li>Lu MC. Keynote on Health Resilience. Taiwan, November 2026. (Framework for the resilience sections of this report.)</li>
 </ul>
 """
+
+    _vitals = [
+        ('Sleep score 睡眠分數', fmt(sp_sleep_score.get('mean'), 0), sleep_score_level),
+        ('Readiness 準備度', fmt(sp_readiness.get('mean'), 0), readiness_level),
+        ('Sleep hours 睡眠時數', fmt(sp_sleep_hours.get('mean'), 1) + ' h', sleep_level),
+        ('Night HR 夜間心率', fmt(sp_nightly_hr.get('mean'), 0) + ' bpm', hr_level),
+        ('SpO2 血氧', fmt(sp_spo2.get('mean'), 1) + ' %', spo2_level),
+        ('Temp dev 體溫偏差', fmt(sp_temp_dev.get('mean'), 2), temp_level),
+        ('Steps 步數', fmt(sp_steps.get('mean'), 0), steps_level),
+    ]
+    _attention = [(lbl, lvl) for (lbl, _v, lvl) in _vitals if lvl != 'green']
+    _stress14 = None
+    if not dailystress.empty and 'stress_high' in dailystress.columns and 'recovery_high' in dailystress.columns and 'day_dt' in dailystress.columns:
+        _w = dailystress.dropna(subset=['day_dt']).sort_values('day_dt').tail(14)
+        if len(_w) >= 7:
+            _stress14 = (float(_w['stress_high'].sum()), float(_w['recovery_high'].sum()),
+                         str(_w['day_summary'].iloc[-1]) if 'day_summary' in _w.columns and pd.notna(_w['day_summary'].iloc[-1]) else '')
+    _top_actions = [(r.get('Domain / 面向', ''), r.get('Risk', ''), r.get('Action (2-4 weeks) / 建議行動（2-4 週）', '')) for r in rec_rows[:2]]
+    _bg_path = BASE / 'resilience_background.html'
+    background_html = ''
+    if _bg_path.exists():
+        background_html = ('<h2>Background: Health Resilience / 背景資料：健康韌性</h2>'
+                           '<div class="card">' + _bg_path.read_text(encoding='utf-8') + '</div>')
+
+    summary_html = summary_section(sp_sleep_score.get('mean'), sp_readiness.get('mean'),
+                                   _vitals, _attention, _stress14, _top_actions, window_text)
 
     resilience_html = resilience_section(dailystress, dailysleep, sleepmodel)
 
@@ -1064,6 +1162,12 @@ def main() -> None:
     .rec-risk-alert {{ background:#ffe3ef; color:#8a1f4d; border-color:#ffb9d3; }}
     .rec-risk-low {{ background:#e8f7ed; color:#166b40; border-color:#a8dfbc; }}
     .rec-action-alert {{ color:#b0175f; font-weight:700; }}
+    .tab-bar {{ display:flex; gap:6px; flex-wrap:wrap; margin:14px 0; }}
+    .tab-btn {{ padding:7px 14px; border-radius:999px; border:1px solid var(--line); background:#fff; cursor:pointer; font-size:14px; }}
+    .tab-btn.active {{ background:#333; color:#fff; border-color:#333; }}
+    .ring-wrap {{ display:flex; gap:22px; flex-wrap:wrap; }}
+    .vital-dot {{ display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }}
+    @media print {{ .tab-bar {{ display:none; }} .tab-panel {{ display:block !important; }} }}
     @media (max-width: 900px) {{
       .chart-grid {{ grid-template-columns:1fr; }}
     }}
@@ -1076,6 +1180,11 @@ def main() -> None:
       <div class=\"subtitle\">Your Oura data with healthy-population standards, practical ranges, and easy interpretation.</div>
       <div style=\"margin-top:10px\"><span class=\"pill\">Data window: {window_text}</span><span class=\"pill\">Approach: long-term trends + healthy-population standards + your own data distribution</span></div>
     </section>
+
+    <div class="tab-bar"><button class="tab-btn active" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-summary').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Summary 總覽</button><button class="tab-btn" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-resilience').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Resilience 韌性</button><button class="tab-btn" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-comparison').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Comparison 比較</button><button class="tab-btn" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-trends').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Trends 趨勢</button><button class="tab-btn" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-notes').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Notes 筆記</button><button class="tab-btn" onclick="(document.querySelectorAll('.tab-panel').forEach(p=>p.style.display='none'),document.getElementById('panel-actions').style.display='block',document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')),this.classList.add('active'))">Actions 行動</button></div>
+    <div class="tab-panel" id="panel-summary">{summary_html}</div>
+    <div class="tab-panel" id="panel-resilience" style="display:none">{resilience_html}</div>
+    <div class="tab-panel" id="panel-comparison" style="display:none">
 
     <h2>1) Analysis Approach / 分析方法</h2>
     <div class=\"card\">
@@ -1103,6 +1212,8 @@ def main() -> None:
       </div>
     </div>
 
+    </div>
+    <div class="tab-panel" id="panel-notes" style="display:none">
     <h2>4) Data-Driven Clinical Notes / 醫學解讀筆記</h2>
     <div class=\"card\">
       <ul>{''.join([f'<li>{x}</li>' for x in insight_lines])}</ul>
@@ -1115,10 +1226,14 @@ def main() -> None:
       </ul>
     </div>
 
+    {background_html}
+    </div>
+    <div class="tab-panel" id="panel-trends" style="display:none">
     <h2>5) Trend Graphs / 趨勢圖</h2>
     <div class=\"chart-grid\">{''.join([f'<div class="chart-item card"><h3>{t}</h3>{(ASSET_DIR/f).read_text(encoding="utf-8")}</div>' for t, f in charts])}</div>
 
-    {resilience_html}
+    </div>
+    <div class="tab-panel" id="panel-actions" style="display:none">
 
     <h2>7) Medical Inference, Prediction, and Action Plan / 醫學推測、預測與行動建議</h2>
     <div class=\"card\">{rec_cards_html(rec_rows)}</div>
@@ -1137,6 +1252,7 @@ def main() -> None:
     <div class=\"card\">{sources_html}</div>
 
     <p class=\"muted footnote-sm\">Medical disclaimer: This report was generated by an unofficial open-source tool for health education and early screening support only. It is not a medical device, and it does not diagnose, treat, cure, or prevent any disease or condition; nothing in it is medical advice, and no doctor-patient relationship is created. Wearable data can be inaccurate or incomplete, and the automated interpretations here may be wrong; they are provided &quot;as is&quot; without warranties of any kind, and the developer and contributors accept no liability for reliance on this report. Always seek the advice of a qualified clinician with any questions about a medical condition, and never disregard professional advice or delay seeking it because of this report. If you think you may have a medical emergency, call your local emergency number immediately. This tool is not affiliated with, endorsed by, or sponsored by Oura Health Oy. See DISCLAIMER.md in the project repository for the full disclaimer.</p>
+    </div>
   </div>
 </body>
 </html>

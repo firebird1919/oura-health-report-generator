@@ -82,6 +82,21 @@ table, Trend and Map charts, and a Stress & Recovery summary for the last
 (HRV / resting HR) data; with less history the section prints a short note
 and the rest of the report is unaffected.
 
+### Tabbed layout (HTML report)
+
+The HTML report mirrors the companion app's layout: it opens on a **Summary**
+tab (Sleep and Readiness score rings, vitals with risk dots, Needs Attention,
+a Stress & Recovery card, and the top two actions), with tabs for Resilience,
+Comparison, Trends, Notes, and Actions. Tabs are plain HTML/CSS/JS in the
+single output file — no server needed — and printing shows all sections.
+
+The report is framed around **health resilience** (Lu MC, keynote on Health
+Resilience, Taiwan, November 2026 — see the report's References). If a file
+named `resilience_background.html` sits in the data folder, the generator
+adds its contents to the Notes tab as a "Background: Health Resilience"
+section (see `examples/resilience_background.example.html`). Keep
+third-party material in your private copy only.
+
 ### Estimated Resilience (in the app)
 
 The app's Resilience tab shows an **Estimated Resilience**: a
