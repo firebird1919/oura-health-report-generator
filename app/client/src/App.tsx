@@ -1,8 +1,12 @@
 // Oura Health Report — the app version of the generated preventive health
-// report. Renders the newest stored snapshot by default and lets past
+// report. Opens on an Oura-app-style Summary tab (headline score rings,
+// vitals at a glance, needs-attention callouts, top actions) with the full
+// report sections one tap away in detail tabs: Comparison, Trends, Notes,
+// Actions. Renders the newest stored snapshot by default and lets past
 // snapshots be browsed from the history strip. All report content comes
 // from the snapshot payload (server data); nothing person-specific is
-// hard-coded here.
+// hard-coded here — the summary is derived from the same payload fields
+// the detail tabs render.
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -22,7 +26,18 @@ import { api, type ApiResponse } from "./api";
 type SnapshotMeta = ApiResponse<typeof api, "listSnapshots">["snapshots"][number];
 type SnapshotFull = NonNullable<ApiResponse<typeof api, "getSnapshot">["snapshot"]>;
 type Payload = SnapshotFull["payload"];
+type ComparisonRow = Payload["comparison"][number];
 type RiskTone = Payload["comparison"][number]["risk"];
+
+type TabId = "summary" | "comparison" | "trends" | "notes" | "actions";
+
+const TABS: { id: TabId; en: string; zh: string }[] = [
+  { id: "summary", en: "Summary", zh: "總覽" },
+  { id: "comparison", en: "Comparison", zh: "比較" },
+  { id: "trends", en: "Trends", zh: "趨勢" },
+  { id: "notes", en: "Notes", zh: "筆記" },
+  { id: "actions", en: "Actions", zh: "行動" },
+];
 
 const RISK_TEXT: Record<RiskTone, string> = {
   red: "text-[var(--risk-red)]",
@@ -201,12 +216,213 @@ function DualChart({
   );
 }
 
-/* --------------------------------- sections -------------------------------- */
+/* ------------------------------ summary pieces ----------------------------- */
+
+// Oura's own score bands, as stated in the payload's guideline text:
+// 85-100 optimal, 70-84 good, 60-69 fair, below 60 pay attention. Colors
+// match the band-distribution bars in the Comparison tab.
+function scoreBand(value: number): { en: string; zh: string; color: string } {
+  if (value >= 85) return { en: "Optimal", zh: "最佳", color: "#2a9d50" };
+  if (value >= 70) return { en: "Good", zh: "良好", color: "#74c69d" };
+  if (value >= 60) return { en: "Fair", zh: "尚可", color: "#e9c46a" };
+  return { en: "Pay Attention", zh: "需注意", color: "#e63946" };
+}
+
+function ScoreRing({ row }: { row: ComparisonRow }) {
+  const value = Number.parseFloat(row.mean);
+  const size = 136;
+  const stroke = 10;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const known = Number.isFinite(value);
+  const fraction = known ? Math.min(Math.max(value, 0), 100) / 100 : 0;
+  const band = known ? scoreBand(value) : null;
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div
+        className="relative"
+        role="img"
+        aria-label={`${row.metricEn}: ${row.mean} out of 100${band ? `, ${band.en}` : ""}`}
+      >
+        <svg width={size} height={size} className="-rotate-90">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="var(--border)"
+            strokeWidth={stroke}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={band?.color ?? "var(--dim)"}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - fraction)}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-4xl font-bold [font-variant-numeric:tabular-nums] text-[var(--text)]">
+            {row.mean}
+          </span>
+          <span className="text-xs text-[var(--dim)]">/ 100</span>
+        </div>
+      </div>
+      <p className="mt-2 font-semibold text-[var(--text)]">
+        {row.metricEn} <span className="text-[var(--dim)]">/ {row.metricZh}</span>
+      </p>
+      {band ? (
+        <p className="text-sm font-semibold" style={{ color: band.color }}>
+          {band.en} · {band.zh}
+        </p>
+      ) : null}
+      <p className="text-xs text-[var(--dim)]">window average / 本期平均</p>
+    </div>
+  );
+}
+
+// The vitals strip picks these comparison rows, in this order, when present.
+const VITAL_METRICS = [
+  "Main sleep duration",
+  "Night average heart rate",
+  "Blood oxygen (SpO2)",
+  "Temperature deviation",
+  "Daily steps",
+];
+
+function SummaryView({
+  snapshot,
+  onGoTab,
+}: {
+  snapshot: SnapshotFull;
+  onGoTab: (tab: TabId) => void;
+}) {
+  const p = snapshot.payload;
+  const scoreRows = p.comparison.filter((r) => r.unit === "0-100");
+  const vitals = VITAL_METRICS.map((name) =>
+    p.comparison.find((r) => r.metricEn === name),
+  ).filter((r): r is ComparisonRow => r != null);
+  const attention = p.comparison.filter((r) => r.risk !== "green");
+  const topActions = p.recommendations.slice(0, 2);
+
+  return (
+    <div>
+      <p className="mt-5 text-sm text-[var(--dim)]">
+        This window at a glance / 本期總覽 · {snapshot.windowStart} → {snapshot.windowEnd}
+      </p>
+
+      {/* Headline scores, Oura style */}
+      {scoreRows.length > 0 ? (
+        <Card className="mt-3">
+          <div className="flex flex-wrap justify-center gap-x-10 gap-y-6 py-2">
+            {scoreRows.map((row) => (
+              <ScoreRing key={row.metricEn} row={row} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {/* Vitals strip */}
+      {vitals.length > 0 ? (
+        <>
+          <SectionTitle>Vitals / 關鍵數據</SectionTitle>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {vitals.map((row) => (
+              <Card key={row.metricEn} className="p-3.5">
+                <p className="flex items-start justify-between gap-1 text-xs text-[var(--dim)]">
+                  <span>
+                    {row.metricEn}
+                    <br />
+                    {row.metricZh}
+                  </span>
+                  <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${RISK_DOT[row.risk]}`} />
+                </p>
+                <p className="mt-1.5 text-2xl font-bold [font-variant-numeric:tabular-nums] text-[var(--text)]">
+                  {row.mean}
+                </p>
+                <p className="text-xs text-[var(--dim)]">{row.unit} · avg / 平均</p>
+              </Card>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {/* Needs attention — tap through to the Comparison tab */}
+      {attention.length > 0 ? (
+        <>
+          <SectionTitle>Needs Attention / 需要注意</SectionTitle>
+          <div className="grid gap-3">
+            {attention.map((row) => (
+              <button
+                key={row.metricEn}
+                type="button"
+                onClick={() => onGoTab("comparison")}
+                className="flex w-full items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-left shadow-[0_6px_20px_rgba(30,43,67,0.06)]"
+              >
+                <span className={`inline-block h-3 w-3 shrink-0 rounded-full ${RISK_DOT[row.risk]}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold text-[var(--text)]">
+                    {row.metricEn} <span className="text-[var(--dim)]">/ {row.metricZh}</span>
+                  </span>
+                  <span className="block truncate text-sm text-[var(--dim)]">
+                    {row.interpretation}
+                  </span>
+                </span>
+                <RiskBadge tone={row.risk} label={row.riskLabel} />
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {/* Top priority actions */}
+      {topActions.length > 0 ? (
+        <>
+          <SectionTitle>Top Priorities / 首要行動</SectionTitle>
+          <div className="grid gap-3">
+            {topActions.map((rec) => (
+              <Card key={rec.priority}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="rounded-full border border-[#9ad6b3] bg-[#e6f6ec] px-2 py-0.5 text-xs font-bold text-[#15693f] dark:border-[#2c5c40] dark:bg-[#173325] dark:text-[#7fe0a8]">
+                    Priority {rec.priority}
+                  </span>
+                  <RiskBadge tone={rec.risk} label={rec.riskLabel} />
+                </div>
+                <h3 className="mt-2 text-base font-semibold text-[var(--text)]">
+                  {rec.domainEn} <span className="text-[var(--dim)]">/ {rec.domainZh}</span>
+                </h3>
+                <p className="mt-1 text-sm">
+                  <b>Action 2-4 Weeks / 行動建議：</b>{" "}
+                  <span className={rec.risk === "green" ? "" : `font-semibold ${RISK_TEXT[rec.risk]}`}>
+                    {rec.action}
+                  </span>
+                </p>
+              </Card>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => onGoTab("actions")}
+            className="mt-3 min-h-11 w-full rounded-full border border-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent)]"
+          >
+            See all actions / 查看全部行動建議 →
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* ------------------------------ detail sections ---------------------------- */
 
 function ComparisonSection({ payload }: { payload: Payload }) {
   return (
     <>
-      <SectionTitle>2) Preventive Comparison Table / 預防醫學比較表（含健康族群標準）</SectionTitle>
+      <SectionTitle>Preventive Comparison Table / 預防醫學比較表（含健康族群標準）</SectionTitle>
 
       {/* Phone: one card per metric */}
       <div className="grid gap-3 md:hidden">
@@ -314,7 +530,7 @@ const BAND_SEGMENTS = [
 function BandsSection({ payload }: { payload: Payload }) {
   return (
     <>
-      <SectionTitle>3) Oura Score Band Distribution / 分數區間分佈</SectionTitle>
+      <SectionTitle>Oura Score Band Distribution / 分數區間分佈</SectionTitle>
       <div className="grid gap-3">
         {payload.bands.map((band) => (
           <Card key={band.nameEn}>
@@ -371,7 +587,7 @@ function BandsSection({ payload }: { payload: Payload }) {
 function NotesSection({ payload }: { payload: Payload }) {
   return (
     <>
-      <SectionTitle>4) Data-Driven Clinical Notes / 醫學解讀筆記</SectionTitle>
+      <SectionTitle>Data-Driven Clinical Notes / 醫學解讀筆記</SectionTitle>
       <Card>
         <ul className="list-disc space-y-1.5 pl-5 text-sm">
           {payload.notesEn.map((n) => (
@@ -392,7 +608,7 @@ function ChartsSection({ payload }: { payload: Payload }) {
   const c = payload.charts;
   return (
     <>
-      <SectionTitle>5) Trend Graphs / 趨勢圖</SectionTitle>
+      <SectionTitle>Trend Graphs / 趨勢圖</SectionTitle>
       <div className="grid gap-3 lg:grid-cols-2">
         <SingleChart title="Daily Steps / 每日步數" data={c.steps} color="#ff6b8b" formatY={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))} />
         <SingleChart title="Sleep Score / 睡眠分數" data={c.sleepScore} color="#5e60ce" />
@@ -409,7 +625,7 @@ function ChartsSection({ payload }: { payload: Payload }) {
 function RecommendationsSection({ payload }: { payload: Payload }) {
   return (
     <>
-      <SectionTitle>6) Medical Inference, Prediction, and Action Plan / 醫學推測、預測與行動建議</SectionTitle>
+      <SectionTitle>Medical Inference, Prediction, and Action Plan / 醫學推測、預測與行動建議</SectionTitle>
       <div className="grid gap-3">
         {payload.recommendations.map((rec) => (
           <Card key={rec.priority}>
@@ -461,6 +677,24 @@ function RecommendationsSection({ payload }: { payload: Payload }) {
   );
 }
 
+function ReferencesSection({ payload }: { payload: Payload }) {
+  return (
+    <>
+      <SectionTitle>References / 參考來源</SectionTitle>
+      <Card>
+        <ul className="list-disc space-y-1 pl-5 text-sm">
+          {payload.references.map((r) => (
+            <li key={r}>{r}</li>
+          ))}
+        </ul>
+        <p className="mt-4 border-t border-[var(--border)] pt-3 text-xs leading-relaxed text-[var(--dim)]">
+          <b className="text-[var(--text)]">Medical disclaimer:</b> {payload.disclaimer}
+        </p>
+      </Card>
+    </>
+  );
+}
+
 /* ----------------------------------- app ----------------------------------- */
 
 function ReportView({
@@ -475,6 +709,8 @@ function ReportView({
   onSelect: (id: number) => void;
 }) {
   const p = snapshot.payload;
+  const [tab, setTab] = useState<TabId>("summary");
+
   return (
     <main className="mx-auto w-full max-w-6xl px-4 pb-10">
       {/* Hero — mirrors the generated report's header band */}
@@ -496,16 +732,6 @@ function ReportView({
             Approach: long-term trends + healthy-population standards + your own data distribution
           </span>
         </div>
-        {p.comparison
-          .filter((r) => r.risk !== "green")
-          .map((r) => (
-            <p key={r.metricEn} className="mt-3 flex items-start gap-2 text-sm">
-              <span className={`mt-[7px] inline-block h-2.5 w-2.5 shrink-0 rounded-full ${RISK_DOT[r.risk]}`} />
-              <span>
-                <b>{r.metricEn}</b> — {r.riskLabel}: {r.interpretation}
-              </span>
-            </p>
-          ))}
       </header>
 
       {/* Snapshot history */}
@@ -534,32 +760,72 @@ function ReportView({
         </nav>
       ) : null}
 
-      <SectionTitle>1) Analysis Approach / 分析方法</SectionTitle>
-      <Card>
-        <ul className="list-disc space-y-1.5 pl-5 text-sm">
-          {p.approach.map((a) => (
-            <li key={a}>{a}</li>
+      {/* Tab bar — sticky so the detail sections stay one tap away */}
+      <div className="sticky top-0 z-20 -mx-4 mt-4 bg-[var(--bg)] px-4 py-2">
+        <div
+          role="tablist"
+          aria-label="Report sections"
+          className="flex gap-1 rounded-full border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[0_6px_20px_rgba(30,43,67,0.06)]"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.id}
+              onClick={() => setTab(t.id)}
+              className={`min-h-11 flex-1 rounded-full px-1 py-1.5 text-center leading-tight ${
+                tab === t.id
+                  ? "bg-[var(--accent)] font-semibold text-white"
+                  : "text-[var(--dim)]"
+              }`}
+            >
+              <span className="block text-[13px]">{t.en}</span>
+              <span className="block text-[11px]">{t.zh}</span>
+            </button>
           ))}
-        </ul>
-      </Card>
+        </div>
+      </div>
 
-      <ComparisonSection payload={p} />
-      <BandsSection payload={p} />
-      <NotesSection payload={p} />
-      <ChartsSection payload={p} />
-      <RecommendationsSection payload={p} />
+      {tab === "summary" ? (
+        <div role="tabpanel">
+          <SummaryView snapshot={snapshot} onGoTab={setTab} />
+        </div>
+      ) : null}
 
-      <SectionTitle>7) References / 參考來源</SectionTitle>
-      <Card>
-        <ul className="list-disc space-y-1 pl-5 text-sm">
-          {p.references.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
-        <p className="mt-4 border-t border-[var(--border)] pt-3 text-xs leading-relaxed text-[var(--dim)]">
-          <b className="text-[var(--text)]">Medical disclaimer:</b> {p.disclaimer}
-        </p>
-      </Card>
+      {tab === "comparison" ? (
+        <div role="tabpanel">
+          <SectionTitle>Analysis Approach / 分析方法</SectionTitle>
+          <Card>
+            <ul className="list-disc space-y-1.5 pl-5 text-sm">
+              {p.approach.map((a) => (
+                <li key={a}>{a}</li>
+              ))}
+            </ul>
+          </Card>
+          <ComparisonSection payload={p} />
+          <BandsSection payload={p} />
+        </div>
+      ) : null}
+
+      {tab === "trends" ? (
+        <div role="tabpanel">
+          <ChartsSection payload={p} />
+        </div>
+      ) : null}
+
+      {tab === "notes" ? (
+        <div role="tabpanel">
+          <NotesSection payload={p} />
+        </div>
+      ) : null}
+
+      {tab === "actions" ? (
+        <div role="tabpanel">
+          <RecommendationsSection payload={p} />
+          <ReferencesSection payload={p} />
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -607,6 +873,8 @@ export function App() {
         </main>
       ) : (
         <ReportView
+          // Keyed by snapshot so switching reports lands back on Summary.
+          key={detail.data.snapshot.id}
           snapshot={detail.data.snapshot}
           snapshots={snapshots}
           selectedId={detail.data.snapshot.id}
