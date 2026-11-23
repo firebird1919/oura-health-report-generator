@@ -3,7 +3,12 @@
 This folder is a complete Muse web app (TypeScript Space) that displays a
 person's Oura preventive health report — the same report `generate_report.py`
 renders as HTML — as a private, installable app with a history of dated
-report snapshots.
+report snapshots. The app opens on an Oura-style Summary tab, with detail
+tabs for Resilience, Comparison, Trends, Notes, and Actions. The
+Resilience tab shows the app's own **Estimated Resilience** — a
+transparent estimate computed from the user's ring data (see the README
+section "Estimated Resilience (in the app)"); it is not Oura's official
+score.
 
 ## For the installing Muse — read this first
 
@@ -56,6 +61,24 @@ report snapshots.
    the comparison table, score bands, notes, seven trend charts,
    recommendation cards, and disclaimer, and list the snapshot in the
    history strip.
+
+## Optional payload fields: stressDays and resilience
+
+Two optional payload fields light up extra UI when present (older
+snapshots without them render exactly as before):
+
+- `stressDays` — Oura's per-day stress summary labels (`day_summary` in
+  `dailystress.csv`, which `build_csvs.py` now exports). They render as
+  day-label chips and feed the Summary tab's Stress & Recovery card.
+- `resilience` — the Estimated Resilience payload (level, index,
+  contributors, trend, map, method). The installing Muse computes it
+  from the user's own pulled ring data using the documented method (see
+  the README section "Estimated Resilience (in the app)") and includes
+  it in the snapshot payload. The schema requires an `official_anchor`
+  object: when calibrating against the user's own Oura app, record their
+  official reading there; for a first snapshot without one, use a
+  clearly-labeled placeholder. Never put anyone else's readings or
+  values in the repo copy — the repo seed's anchor is an invented sample.
 
 ## Refreshing later
 

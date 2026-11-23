@@ -74,6 +74,68 @@ export const recommendationSchema = z.object({
 });
 export type Recommendation = z.infer<typeof recommendationSchema>;
 
+export const stressDaySchema = z.object({
+  day: z.string(), // YYYY-MM-DD
+  summary: z.string(), // Oura day_summary label, e.g. "stressful"; "" when Oura gave none
+});
+export type StressDay = z.infer<typeof stressDaySchema>;
+
+// Estimated Resilience — a transparent estimate computed by Muse from the
+// user's own pulled ring data (Oura's algorithm is proprietary and its API
+// endpoint is not authorized on this connection, so this is NOT Oura's
+// official score). Optional: snapshots computed before this field existed
+// omit it and render exactly as before.
+export const resilienceContributorSchema = z.object({
+  score: z.number(), // 0-100
+  rating: z.string(), // e.g. "Fair", "Pay attention", "High"
+  avg_min: z.number().optional(), // average minutes/day, where applicable
+});
+export type ResilienceContributor = z.infer<typeof resilienceContributorSchema>;
+
+export const resilienceAnchorSchema = z.object({
+  date: z.string(), // YYYY-MM-DD the official reading was captured
+  level: z.string(),
+  nighttime_recovery: z.string(),
+  daytime_recovery: z.string(),
+  daytime_stress_load: z.string(),
+  source: z.string(),
+});
+export type ResilienceAnchor = z.infer<typeof resilienceAnchorSchema>;
+
+export const resilienceEstimateSchema = z.object({
+  window: z.array(z.string()), // [start, end] YYYY-MM-DD
+  index: z.number(), // 0-100 estimated resilience index
+  level: z.string(), // Limited | Adequate | Solid | Strong | Exceptional
+  contributors: z.object({
+    nighttime_recovery: resilienceContributorSchema,
+    daytime_recovery: resilienceContributorSchema,
+    daytime_stress_load: resilienceContributorSchema,
+  }),
+  trend: z.array(
+    z.object({
+      day: z.string(), // YYYY-MM-DD
+      index: z.number(),
+      level: z.string(),
+    }),
+  ),
+  map: z.array(
+    z.object({
+      day: z.string(), // YYYY-MM-DD
+      stress_min: z.number(),
+      recovery_min: z.number(),
+    }),
+  ),
+  official_anchor: resilienceAnchorSchema,
+  // Optional: a second official Oura reading used to calibrate the estimate
+  // (v2 estimates carry one; v1 snapshots omit it and render as before).
+  official_anchor_2: resilienceAnchorSchema.optional(),
+  // Optional: third and fourth official Oura readings (v3 estimates).
+  official_anchor_3: resilienceAnchorSchema.optional(),
+  official_anchor_4: resilienceAnchorSchema.optional(),
+  method: z.string(), // transparent method description, shown as small print
+});
+export type ResilienceEstimate = z.infer<typeof resilienceEstimateSchema>;
+
 export const reportPayloadSchema = z.object({
   approach: z.array(z.string()),
   comparison: z.array(comparisonRowSchema),
@@ -90,6 +152,12 @@ export const reportPayloadSchema = z.object({
     stressRecovery: z.array(dualPointSchema), // a = stress minutes, b = recovery minutes
     deepRem: z.array(dualPointSchema), // a = deep minutes, b = REM minutes
   }),
+  // Optional: Oura's per-day stress summary labels (dailystress day_summary).
+  // May start one day before charts.stressRecovery; older snapshots omit it.
+  stressDays: z.array(stressDaySchema).optional(),
+  // Optional: transparent Estimated Resilience computed from the ring data
+  // in this snapshot (see resilienceEstimateSchema). Older snapshots omit it.
+  resilience: resilienceEstimateSchema.optional(),
   recommendations: z.array(recommendationSchema),
   summaryEn: z.array(z.string()),
   summaryZh: z.array(z.string()),

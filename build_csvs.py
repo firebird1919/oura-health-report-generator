@@ -12,7 +12,7 @@ Writes into --output-dir (default ~/workspace/oura-report/input):
   dailysleep.csv       (day, score)
   dailyactivity.csv    (day, score, steps, active_calories, total_calories)
   dailyspo2.csv        (day, spo2_percentage as JSON string)
-  dailystress.csv      (day, recovery_high, stress_high)
+  dailystress.csv      (day, recovery_high, stress_high, day_summary)
   sleepmodel.csv       (day, average_heart_rate, total_sleep_duration,
                         bedtime_start, bedtime_end)
   heartrate.csv        (timestamp, bpm) - 5-min samples for the HR chart
@@ -192,10 +192,11 @@ def main():
                 "day": s["day"],
                 "recovery_high": s.get("recovery_high"),
                 "stress_high": s.get("stress_high"),
+                "day_summary": s.get("day_summary"),
             }
             for s in stress
         ],
-        ["day", "recovery_high", "stress_high"],
+        ["day", "recovery_high", "stress_high", "day_summary"],
     )
     write_csv(
         "sleepmodel.csv",

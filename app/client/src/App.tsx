@@ -1,12 +1,14 @@
 // Oura Health Report — the app version of the generated preventive health
 // report. Opens on an Oura-app-style Summary tab (headline score rings,
 // vitals at a glance, needs-attention callouts, top actions) with the full
-// report sections one tap away in detail tabs: Comparison, Trends, Notes,
-// Actions. Renders the newest stored snapshot by default and lets past
-// snapshots be browsed from the history strip. All report content comes
-// from the snapshot payload (server data); nothing person-specific is
-// hard-coded here — the summary is derived from the same payload fields
-// the detail tabs render.
+// report sections one tap away in detail tabs: Resilience, Comparison,
+// Trends, Notes, Actions — the Resilience tab sits right after Summary and
+// shows only this app's Estimated Resilience calculation (level, trend,
+// contributors, map). Renders the newest stored snapshot by default and
+// lets past snapshots be browsed from the history strip. All report
+// content comes from the snapshot payload (server data); nothing
+// person-specific is hard-coded here — the summary is derived from the
+// same payload fields the detail tabs render.
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +16,7 @@ import {
 CartesianGrid,
 Line,
 LineChart,
+ReferenceArea,
 ReferenceLine,
 ResponsiveContainer,
 Tooltip,
@@ -29,10 +32,11 @@ type Payload = SnapshotFull["payload"];
 type ComparisonRow = Payload["comparison"][number];
 type RiskTone = Payload["comparison"][number]["risk"];
 
-type TabId = "summary" | "comparison" | "trends" | "notes" | "actions";
+type TabId = "summary" | "comparison" | "trends" | "notes" | "actions" | "resilience";
 
 const TABS: { id: TabId; en: string; zh: string }[] = [
   { id: "summary", en: "Summary", zh: "總覽" },
+  { id: "resilience", en: "Resilience", zh: "韌性" },
   { id: "comparison", en: "Comparison", zh: "比較" },
   { id: "trends", en: "Trends", zh: "趨勢" },
   { id: "notes", en: "Notes", zh: "筆記" },
@@ -308,6 +312,21 @@ function SummaryView({
   ).filter((r): r is ComparisonRow => r != null);
   const attention = p.comparison.filter((r) => r.risk !== "green");
   const topActions = p.recommendations.slice(0, 2);
+  const stressData = p.charts.stressRecovery;
+  const hasStress =
+    stressData.length > 0 && stressData.some((d) => d.a > 0 || d.b > 0);
+  const stressTotal = stressData.reduce((s, d) => s + d.a, 0);
+  const recoveryTotal = stressData.reduce((s, d) => s + d.b, 0);
+  const stressMax = Math.max(stressTotal, recoveryTotal, 1);
+  const stressBalance =
+    recoveryTotal > 0
+      ? `${(stressTotal / recoveryTotal).toFixed(1)} : 1`
+      : stressTotal > 0
+        ? "stress only"
+        : "—";
+  const latestStressSummary = [...(p.stressDays ?? [])]
+    .reverse()
+    .find((s) => s.summary.trim() !== "")?.summary;
 
   return (
     <div>
@@ -348,6 +367,71 @@ function SummaryView({
               </Card>
             ))}
           </div>
+        </>
+      ) : null}
+
+      {/* Stress & recovery at a glance — tap through to the Resilience tab */}
+      {hasStress ? (
+        <>
+          <SectionTitle>Stress &amp; Recovery / 壓力與恢復</SectionTitle>
+          <button
+            type="button"
+            onClick={() => onGoTab("resilience")}
+            className="block w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-left shadow-[0_6px_20px_rgba(30,43,67,0.06)]"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-xs text-[var(--dim)]">
+                Window totals · {stressData.length} days / 本期總計
+              </span>
+              {latestStressSummary ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-[11px] text-[var(--dim)]">
+                    Latest day / 最近一日
+                  </span>
+                  <StressSummaryChip summary={latestStressSummary} />
+                </span>
+              ) : null}
+            </span>
+            <span className="mt-3 block space-y-2.5">
+              <span className="flex items-center gap-2">
+                <span className="w-20 shrink-0 text-xs text-[var(--dim)]">
+                  Stress 壓力
+                </span>
+                <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                  <span
+                    className="block h-full rounded-full bg-[var(--accent)]"
+                    style={{ width: `${(stressTotal / stressMax) * 100}%` }}
+                  />
+                </span>
+                <span className="w-28 shrink-0 text-right text-xs [font-variant-numeric:tabular-nums] text-[var(--text)]">
+                  {stressTotal.toLocaleString()} min ·{" "}
+                  {Math.round(stressTotal / stressData.length)}/day
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="w-20 shrink-0 text-xs text-[var(--dim)]">
+                  Recovery 恢復
+                </span>
+                <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                  <span
+                    className="block h-full rounded-full bg-[var(--risk-green)]"
+                    style={{ width: `${(recoveryTotal / stressMax) * 100}%` }}
+                  />
+                </span>
+                <span className="w-28 shrink-0 text-right text-xs [font-variant-numeric:tabular-nums] text-[var(--text)]">
+                  {recoveryTotal.toLocaleString()} min ·{" "}
+                  {Math.round(recoveryTotal / stressData.length)}/day
+                </span>
+              </span>
+            </span>
+            <span className="mt-3 block text-xs text-[var(--dim)]">
+              Balance 平衡 = stress : recovery ·{" "}
+              <span className="font-semibold text-[var(--text)]">
+                {stressBalance}
+              </span>{" "}
+              — tap for the day-by-day picture / 點按查看每日明細 →
+            </span>
+          </button>
         </>
       ) : null}
 
@@ -695,6 +779,549 @@ function ReferencesSection({ payload }: { payload: Payload }) {
   );
 }
 
+// Oura day_summary labels: English stays primary, with a Chinese gloss and a
+// tone color per label. Unknown labels render English-only in a neutral tone.
+const STRESS_SUMMARY_META: Record<string, { zh: string; color: string }> = {
+  stressful: { zh: "高壓", color: "var(--risk-red)" },
+  engaged: { zh: "投入", color: "var(--risk-amber)" },
+  relaxed: { zh: "放鬆", color: "var(--risk-green)" },
+  restored: { zh: "已恢復", color: "var(--risk-green)" },
+  normal: { zh: "正常", color: "var(--dim)" },
+};
+
+function StressSummaryChip({ summary }: { summary: string }) {
+  const meta = STRESS_SUMMARY_META[summary.toLowerCase()];
+  const color = meta?.color ?? "var(--dim)";
+  return (
+    <span
+      className="inline-block rounded-full px-1.5 py-0.5 text-[10px] leading-tight font-medium whitespace-nowrap"
+      style={{
+        color,
+        backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`,
+      }}
+    >
+      {summary}
+      {meta ? ` ${meta.zh}` : ""}
+    </span>
+  );
+}
+
+/* --------------------- estimated resilience (computed) --------------------- */
+// A transparent estimate computed by Muse from the snapshot's own ring
+// data — NOT Oura's official score (its algorithm is proprietary and its
+// API endpoint is not authorized on the user's connection). Labeled as an
+// estimate everywhere it appears. Styled after Oura's own Resilience
+// screens (Trend / Map / contributors), which the user shared screenshots
+// of. Renders only when the snapshot payload carries a `resilience` field.
+
+type ResilienceEstimate = NonNullable<Payload["resilience"]>;
+
+// Oura's five resilience levels, bottom to top, with the index bands from
+// the estimate's method and a tone color per level.
+const RESILIENCE_BANDS: {
+  level: string;
+  y1: number;
+  y2: number;
+  fill: string;
+  badge: string;
+}[] = [
+  { level: "Limited", y1: 0, y2: 40, fill: "#e63946", badge: "#e63946" },
+  { level: "Adequate", y1: 40, y2: 55, fill: "#e9c46a", badge: "#b26a00" },
+  { level: "Solid", y1: 55, y2: 65, fill: "#74c69d", badge: "#2a9d50" },
+  { level: "Strong", y1: 65, y2: 80, fill: "#2a9d50", badge: "#2a9d50" },
+  { level: "Exceptional", y1: 80, y2: 100, fill: "#1b4332", badge: "#1b4332" },
+];
+
+function resilienceLevelColor(level: string): string {
+  return (
+    RESILIENCE_BANDS.find((b) => b.level === level)?.badge ?? "var(--dim)"
+  );
+}
+
+// Contributor rating tones, mirroring the app's risk colors: "Pay
+// attention" and "High" (stress load) are the warm alert tone, "Fair" is
+// neutral, and the favorable ratings read green.
+function contributorRatingColor(rating: string): string {
+  if (rating === "Pay attention" || rating === "High") return "#d96c4a";
+  if (rating === "Fair" || rating === "Moderate") return "var(--dim)";
+  return "var(--risk-green)";
+}
+
+function ResilienceTrendChart({ estimate }: { estimate: ResilienceEstimate }) {
+  return (
+    <div className="h-64">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart
+          data={estimate.trend}
+          margin={{ top: 6, right: 76, bottom: 0, left: 0 }}
+        >
+          {RESILIENCE_BANDS.map((band) => (
+            <ReferenceArea
+              key={band.level}
+              y1={band.y1}
+              y2={band.y2}
+              fill={band.fill}
+              fillOpacity={0.13}
+              stroke="none"
+              label={{
+                value: band.level,
+                position: "insideRight",
+                fontSize: 11,
+                fill: "var(--dim)",
+              }}
+            />
+          ))}
+          <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+          <XAxis
+            dataKey="day"
+            tickFormatter={shortDay}
+            tick={AXIS_TICK}
+            tickLine={false}
+            axisLine={{ stroke: "var(--border)" }}
+            minTickGap={24}
+          />
+          <YAxis
+            domain={[0, 100]}
+            ticks={[0, 20, 40, 55, 65, 80, 100]}
+            tick={AXIS_TICK}
+            tickLine={false}
+            axisLine={false}
+            width={32}
+          />
+          <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelFormatter={(label) => String(label)}
+            formatter={(value, _name, item) => {
+              const level = (item?.payload as { level?: string } | undefined)
+                ?.level;
+              return [
+                `${String(value)}${level ? ` · ${level}` : ""}`,
+                "Estimated index",
+              ];
+            }}
+          />
+          <Line
+            type="monotone"
+            dataKey="index"
+            stroke="var(--text)"
+            strokeWidth={2.5}
+            dot={{ r: 3, fill: "var(--text)" }}
+            activeDot={{ r: 5 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Oura Map view: one point per day — that day's 14-day rolling average,
+// x = stress minutes, y = recovery minutes — connected in date order with
+// the latest day highlighted (pink dot). Like Oura's own map, four dashed
+// diagonal lines divide the plot into the five Resilience level bands
+// (Exceptional / Strong / Solid / Adequate / Limited, reading down), and a
+// solid center cross marks the axes: vertical at mid-stress, horizontal
+// at the Low stress / High stress label height (~38% of the plot).
+// Fixed absolute scales (stress 0–360 min, recovery 0–240 min) keep
+// positions comparable across windows and match how Oura's map reads;
+// points outside a range clip to the edge.
+function formatMapDayLabel(day: string): string {
+  const d = new Date(`${day}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return day;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function ResilienceMap({ estimate }: { estimate: ResilienceEstimate }) {
+  const points = estimate.map;
+  if (points.length === 0) return null;
+  const width = 340;
+  const height = 264;
+  const pad = { top: 26, right: 14, bottom: 26, left: 14 };
+  const MAX_STRESS = 360;
+  const MAX_RECOVERY = 240;
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const clampStress = (v: number) => Math.min(Math.max(v, 0), MAX_STRESS);
+  const clampRecovery = (v: number) => Math.min(Math.max(v, 0), MAX_RECOVERY);
+  const x = (v: number) =>
+    pad.left + (clampStress(v) / MAX_STRESS) * plotW;
+  // Display offset on the recovery axis only: Oura's recovery axis is
+  // normalized rather than raw minutes, so plotting raw minutes
+  // (22–58 of a 0–240 scale) drops every point below the lowest level
+  // curve. A fixed +48 min (20% of the scale) lifts the trajectory so
+  // it registers against the level bands as it does in Oura's app.
+  // Stored values are unchanged; only the plotted y position shifts.
+  const RECOVERY_DISPLAY_OFFSET_MIN = 48;
+  const y = (v: number) =>
+    height -
+    pad.bottom -
+    (clampRecovery(v + RECOVERY_DISPLAY_OFFSET_MIN) / MAX_RECOVERY) * plotH;
+  // Center axis cross, as on Oura's map: vertical at mid-width,
+  // horizontal at ~38% of the plot height (the height the Low stress /
+  // High stress labels sit at in Oura's app).
+  const axisX = pad.left + plotW / 2;
+  const axisY = pad.top + plotH * 0.38;
+  const path = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${x(p.stress_min).toFixed(1)} ${y(p.recovery_min).toFixed(1)}`)
+    .join(" ");
+  const first = points[0];
+  const latest = points[points.length - 1];
+  // The four dashed curves are the boundaries between the five
+  // Resilience levels, as on Oura's map. In Oura's app they are not
+  // straight lines but gentle curves — shallow near the left edge,
+  // steepening toward the right (exponential-like), bowing above the
+  // straight chord. Each is drawn as a quadratic Bézier dropping 40%
+  // of the plot height across its width: left-edge entries at
+  // 5/20/35/50% of the plot height, right-edge exits at
+  // 45/60/75/90%, and the control point at mid-width with y at
+  // 15/30/45/60% — above each chord, so the tangent steepens toward
+  // the right edge. Each curve's actual midpoint therefore lands at
+  // 20/35/50/65% of the plot height with a ~5%-of-height bow above
+  // the chord — so the axis center point (50% width, 38% height)
+  // still falls between the two middle curves.
+  const LEVEL_BANDS: { label: string; color: string }[] = [
+    { label: "Exceptional", color: "#2f9e44" },
+    { label: "Strong", color: "#12a594" },
+    { label: "Solid", color: "#d9930d" },
+    { label: "Adequate", color: "#e8590c" },
+    { label: "Limited", color: "#e03131" },
+  ];
+  const boundaryLeftFracs = [0.05, 0.2, 0.35, 0.5];
+  const boundaryRightFracs = [0.45, 0.6, 0.75, 0.9];
+  const boundaryCtrlFracs = [0.15, 0.3, 0.45, 0.6];
+  const boundaryCurves = boundaryLeftFracs.map((leftFrac, i) => ({
+    y0: pad.top + plotH * leftFrac,
+    cy: pad.top + plotH * (boundaryCtrlFracs[i] ?? leftFrac + 0.3),
+    y1: pad.top + plotH * (boundaryRightFracs[i] ?? leftFrac + 0.4),
+    cx: pad.left + plotW / 2,
+  }));
+  // y on boundary curve i at horizontal position xPos (quadratic
+  // Bézier; x advances linearly with t because the control x is the
+  // plot's mid-width).
+  const curveYAt = (i: number, xPos: number) => {
+    const c = boundaryCurves[i];
+    if (!c) return pad.top;
+    const t = (xPos - pad.left) / plotW;
+    const u = 1 - t;
+    return u * u * c.y0 + 2 * u * t * c.cy + t * t * c.y1;
+  };
+  // Band labels sit inside each band, reading down, nudged to follow
+  // the curves. The anchor sits a little in from the left edge so the
+  // labels clear the plot's edge.
+  const labelX = pad.left + plotW * 0.14;
+  const bandLabelY = (band: number) => {
+    const topEdge = band === 0 ? pad.top : curveYAt(band - 1, labelX);
+    const bottomEdge =
+      band === LEVEL_BANDS.length - 1
+        ? pad.top + plotH
+        : curveYAt(band, labelX);
+    return (topEdge + bottomEdge) / 2 + 3;
+  };
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full"
+        role="img"
+        aria-label={`Resilience map: ${points.length} days plotted by 14-day rolling average stress versus recovery minutes; latest day ${latest?.day ?? ""} at ${latest?.stress_min ?? 0} stress minutes and ${latest?.recovery_min ?? 0} recovery minutes`}
+      >
+        <defs>
+          <clipPath id="resilience-map-plot">
+            <rect x={pad.left} y={pad.top} width={plotW} height={plotH} />
+          </clipPath>
+        </defs>
+        {/* center axis cross (solid light gray), behind the boundaries */}
+        <g clipPath="url(#resilience-map-plot)">
+          <line
+            x1={axisX}
+            y1={pad.top}
+            x2={axisX}
+            y2={pad.top + plotH}
+            stroke="var(--dim)"
+            strokeWidth={1}
+            opacity={0.45}
+          />
+          <line
+            x1={pad.left}
+            y1={axisY}
+            x2={pad.left + plotW}
+            y2={axisY}
+            stroke="var(--dim)"
+            strokeWidth={1}
+            opacity={0.45}
+          />
+        </g>
+        {/* four dashed level-boundary curves (quadratic Béziers) */}
+        <g clipPath="url(#resilience-map-plot)">
+          {boundaryCurves.map((c, i) => (
+            <path
+              key={i}
+              d={`M ${pad.left} ${c.y0.toFixed(1)} Q ${c.cx.toFixed(1)} ${c.cy.toFixed(1)} ${(pad.left + plotW).toFixed(1)} ${c.y1.toFixed(1)}`}
+              fill="none"
+              stroke="var(--dim)"
+              strokeWidth={1.4}
+              strokeDasharray="4 3"
+              opacity={0.85}
+            />
+          ))}
+        </g>
+        {/* level band labels, upper-left of each band, reading down,
+            color-coded green (Exceptional) toward red (Limited) */}
+        {LEVEL_BANDS.map((band, i) => (
+          <text
+            key={band.label}
+            x={labelX}
+            y={bandLabelY(i)}
+            textAnchor="start"
+            fontSize={9.5}
+            fontWeight={600}
+            fill={band.color}
+          >
+            {band.label}
+          </text>
+        ))}
+        {/* axis captions */}
+        <text x={width / 2} y={14} textAnchor="middle" fontSize={11} fill="var(--dim)">
+          High recovery
+        </text>
+        <text x={width / 2} y={height - 6} textAnchor="middle" fontSize={11} fill="var(--dim)">
+          Low recovery
+        </text>
+        <text x={pad.left} y={axisY - 6} textAnchor="start" fontSize={11} fill="var(--dim)">
+          Low stress
+        </text>
+        <text x={width - pad.right} y={axisY - 6} textAnchor="end" fontSize={11} fill="var(--dim)">
+          High stress
+        </text>
+        {/* path in date order */}
+        <path d={path} fill="none" stroke="var(--dim)" strokeWidth={1.5} strokeDasharray="1 0" opacity={0.75} />
+        {points.map((p, i) => {
+          const isLatest = i === points.length - 1;
+          return (
+            <g key={p.day}>
+              <title>{`${p.day}: ${p.stress_min} stress min · ${p.recovery_min} recovery min`}</title>
+              <circle
+                cx={x(p.stress_min)}
+                cy={y(p.recovery_min)}
+                r={isLatest ? 7 : 3.5}
+                fill={isLatest ? "var(--accent)" : "var(--surface)"}
+                stroke={isLatest ? "var(--surface)" : "var(--dim)"}
+                strokeWidth={isLatest ? 2 : 1.5}
+              />
+            </g>
+          );
+        })}
+        {/* date labels for the ends of the path */}
+        {first ? (
+          <text
+            x={Math.min(Math.max(x(first.stress_min), 30), width - 30)}
+            y={Math.max(y(first.recovery_min) - 11, 24)}
+            textAnchor="middle"
+            fontSize={10}
+            fontWeight={600}
+            fill="var(--dim)"
+          >
+            {formatMapDayLabel(first.day)}
+          </text>
+        ) : null}
+        {latest && first && latest.day !== first.day ? (
+          <text
+            x={Math.min(Math.max(x(latest.stress_min), 30), width - 30)}
+            y={Math.max(y(latest.recovery_min) - 13, 24)}
+            textAnchor="middle"
+            fontSize={10}
+            fontWeight={700}
+            fill="var(--accent)"
+          >
+            {formatMapDayLabel(latest.day)}
+          </text>
+        ) : null}
+      </svg>
+      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-medium text-[var(--text)]">
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--accent)]"
+          aria-hidden="true"
+        />
+        <span>
+          Pink dot = most recent day · 粉紅點＝最近一日（
+          {latest ? formatMapDayLabel(latest.day) : ""}）
+        </span>
+      </p>
+      <p className="mt-1 text-xs text-[var(--dim)]">
+        Each point is that day&apos;s 14-day rolling average — the same
+        smoothing Oura&apos;s own Map uses.
+        每個點為當日之 14 日滾動平均，與 Oura 官方地圖相同的平滑方式。
+        The four dashed lines are the boundaries between the five
+        Resilience levels, as on Oura&apos;s map — crossing a line upward
+        means the balance improved a level.
+        四條虛線為五個韌性等級之分界（同 Oura 官方地圖）；向上跨線代表平衡改善一個等級。
+        A fixed display offset is applied to the recovery axis so the
+        trajectory registers against the level bands, as on Oura&apos;s
+        map (whose recovery axis is normalized rather than raw minutes).
+        恢復軸加上固定顯示偏移，使軌跡能對應等級曲線，如 Oura 官方地圖（其恢復軸為正規化數值，非原始分鐘）。
+      </p>
+    </div>
+  );
+}
+
+function EstimatedResilienceSection({ payload }: { payload: Payload }) {
+  const estimate = payload.resilience;
+  if (!estimate) return null;
+  const contributors: {
+    key: string;
+    en: string;
+    zh: string;
+    score: number;
+    rating: string;
+    avgMin?: number;
+    avgLabel?: string;
+  }[] = [
+    {
+      key: "night",
+      en: "Nighttime recovery",
+      zh: "夜間恢復",
+      score: estimate.contributors.nighttime_recovery.score,
+      rating: estimate.contributors.nighttime_recovery.rating,
+    },
+    {
+      key: "day-recovery",
+      en: "Daytime recovery",
+      zh: "白天恢復",
+      score: estimate.contributors.daytime_recovery.score,
+      rating: estimate.contributors.daytime_recovery.rating,
+      avgMin: estimate.contributors.daytime_recovery.avg_min,
+      avgLabel: "recovery / day",
+    },
+    {
+      key: "day-stress",
+      en: "Daytime stress load",
+      zh: "白天壓力負荷",
+      score: estimate.contributors.daytime_stress_load.score,
+      rating: estimate.contributors.daytime_stress_load.rating,
+      avgMin: estimate.contributors.daytime_stress_load.avg_min,
+      avgLabel: "stress / day",
+    },
+  ];
+  const windowStart = estimate.window[0] ?? "";
+  const windowEnd = estimate.window[1] ?? windowStart;
+  const levelColor = resilienceLevelColor(estimate.level);
+
+  return (
+    <section>
+      <SectionTitle>Estimated Resilience / 估算韌性</SectionTitle>
+
+      {/* Header: level badge + index, like Oura's Resilience screen */}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <span
+              className="inline-block rounded-full px-3.5 py-1.5 text-lg font-bold text-white"
+              style={{ backgroundColor: levelColor }}
+            >
+              {estimate.level}
+            </span>
+            <p className="mt-2 text-sm text-[var(--dim)]">
+              {windowStart} → {windowEnd}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-4xl font-bold [font-variant-numeric:tabular-nums] text-[var(--text)]">
+              {estimate.index.toFixed(1)}
+            </p>
+            <p className="text-xs text-[var(--dim)]">estimated index / 估算指數 (0–100)</p>
+          </div>
+        </div>
+        <p className="mt-3 border-t border-[var(--border)] pt-3 text-sm font-medium text-[var(--text)]">
+          Transparent estimate computed from your ring data — not Oura&apos;s
+          official score. 依你的戒指數據以公開方法估算，非 Oura 官方分數。
+        </p>
+      </Card>
+
+      {/* Trend view */}
+      <SectionTitle>Trend / 趨勢</SectionTitle>
+      <Card>
+        <ResilienceTrendChart estimate={estimate} />
+        <p className="mt-1 text-xs text-[var(--dim)]">
+          Daily estimated index against Oura&apos;s five level bands (Limited ·
+          Adequate · Solid · Strong · Exceptional).
+        </p>
+      </Card>
+
+      {/* Contributors, measured over the past 14 days */}
+      <SectionTitle>Resilience Contributors / 韌性因子</SectionTitle>
+      <Card>
+        <p className="text-xs text-[var(--dim)]">Measured over the past 14 days / 過去 14 天量測</p>
+        <div className="mt-3 space-y-4">
+          {contributors.map((c) => {
+            const color = contributorRatingColor(c.rating);
+            return (
+              <div key={c.key}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="font-semibold text-[var(--text)]">
+                    {c.en} <span className="text-sm font-normal text-[var(--dim)]">/ {c.zh}</span>
+                  </p>
+                  <p className="text-sm font-bold whitespace-nowrap" style={{ color }}>
+                    {c.rating}
+                  </p>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.min(Math.max(c.score, 0), 100)}%`,
+                        backgroundColor: color,
+                      }}
+                    />
+                  </div>
+                  <span className="w-12 shrink-0 text-right text-xs [font-variant-numeric:tabular-nums] text-[var(--dim)]">
+                    {c.score.toFixed(1)}
+                  </span>
+                </div>
+                {c.avgMin != null ? (
+                  <p className="mt-1 text-xs text-[var(--dim)]">
+                    avg {c.avgMin} min {c.avgLabel} / 平均每日 {c.avgMin} 分鐘
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Map view */}
+      <SectionTitle>Map / 分佈圖</SectionTitle>
+      <Card>
+        <ResilienceMap estimate={estimate} />
+      </Card>
+
+      <p className="mt-3 text-xs leading-relaxed text-[var(--dim)]">
+        <span className="font-semibold text-[var(--text)]">Method / 方法：</span>{" "}
+        {estimate.method}
+      </p>
+    </section>
+  );
+}
+
+function ResilienceView({ payload }: { payload: Payload }) {
+  if (!payload.resilience) {
+    return (
+      <div>
+        <SectionTitle>Estimated Resilience / 估算韌性</SectionTitle>
+        <Card>
+          <p className="text-sm text-[var(--dim)]">
+            No resilience estimate for this report window. 本期間尚無韌性估算。
+          </p>
+        </Card>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <EstimatedResilienceSection payload={payload} />
+    </div>
+  );
+}
+
 /* ----------------------------------- app ----------------------------------- */
 
 function ReportView({
@@ -780,7 +1407,7 @@ function ReportView({
                   : "text-[var(--dim)]"
               }`}
             >
-              <span className="block text-[13px]">{t.en}</span>
+              <span className="block text-xs whitespace-nowrap">{t.en}</span>
               <span className="block text-[11px]">{t.zh}</span>
             </button>
           ))}
@@ -824,6 +1451,12 @@ function ReportView({
         <div role="tabpanel">
           <RecommendationsSection payload={p} />
           <ReferencesSection payload={p} />
+        </div>
+      ) : null}
+
+      {tab === "resilience" ? (
+        <div role="tabpanel">
+          <ResilienceView payload={p} />
         </div>
       ) : null}
     </main>

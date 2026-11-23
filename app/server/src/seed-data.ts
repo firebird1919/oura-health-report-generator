@@ -145,6 +145,59 @@ export const SEED_SNAPSHOT: {
         { day: "2026-01-07", a: 90, b: 100 },
       ],
     },
+    // Sample Oura day_summary labels (dailystress day_summary). Real
+    // snapshots carry one entry per day; "" when Oura gave no label.
+    stressDays: [
+      { day: "2026-01-01", summary: "normal" },
+      { day: "2026-01-02", summary: "relaxed" },
+      { day: "2026-01-03", summary: "restored" },
+      { day: "2026-01-04", summary: "normal" },
+      { day: "2026-01-05", summary: "engaged" },
+      { day: "2026-01-06", summary: "relaxed" },
+      { day: "2026-01-07", summary: "restored" },
+    ],
+    // Sample Estimated Resilience — a transparent estimate computed from
+    // the snapshot's own ring data (see README, "Estimated Resilience").
+    // NOT Oura's official score. All values below are invented round
+    // numbers for this fake window, including the sample anchor.
+    resilience: {
+      window: ["2026-01-01", "2026-01-07"],
+      index: 62,
+      level: "Solid",
+      contributors: {
+        nighttime_recovery: { score: 70, rating: "Good" },
+        daytime_recovery: { score: 100, rating: "Optimal", avg_min: 120 },
+        daytime_stress_load: { score: 20, rating: "Low", avg_min: 60 },
+      },
+      trend: [
+        { day: "2026-01-01", index: 60, level: "Solid" },
+        { day: "2026-01-02", index: 61, level: "Solid" },
+        { day: "2026-01-03", index: 62, level: "Solid" },
+        { day: "2026-01-04", index: 63, level: "Solid" },
+        { day: "2026-01-05", index: 62, level: "Solid" },
+        { day: "2026-01-06", index: 61, level: "Solid" },
+        { day: "2026-01-07", index: 62, level: "Solid" },
+      ],
+      map: [
+        { day: "2026-01-01", stress_min: 60, recovery_min: 120 },
+        { day: "2026-01-02", stress_min: 65, recovery_min: 118 },
+        { day: "2026-01-03", stress_min: 70, recovery_min: 115 },
+        { day: "2026-01-04", stress_min: 62, recovery_min: 122 },
+        { day: "2026-01-05", stress_min: 60, recovery_min: 120 },
+        { day: "2026-01-06", stress_min: 64, recovery_min: 119 },
+        { day: "2026-01-07", stress_min: 63, recovery_min: 121 },
+      ],
+      official_anchor: {
+        date: "2026-01-07",
+        level: "Solid",
+        nighttime_recovery: "Good",
+        daytime_recovery: "Optimal",
+        daytime_stress_load: "Low",
+        source: "SAMPLE \u2014 invented example anchor, not a real Oura reading",
+      },
+      method:
+        "Transparent estimate (not Oura's proprietary score). Contributors use 14-day windows, as Oura labels them. Nighttime recovery = 70% sleep component (sleep score minus 8 points per hour below 7h) + 30% physiology component (50 + 1.5 per ms of HRV above the prior month's median, minus 3 per bpm of lowest resting HR above the prior month's median, clipped 0-100). Daytime recovery score = average daily recovery minutes / 120 x 100. Daytime stress load score = average daily stress minutes / 300 x 100. Level index = 0.4 x nighttime + 0.3 x daytime recovery + 0.3 x (100 - stress load), blending the 14-day value (40%) with a 28-day value (60%) because Oura's level visibly moves slower than its contributors. Levels: Limited <40, Adequate 40-54, Solid 55-64, Strong 65-79, Exceptional >=80. Contributor bands: Optimal >=80, Good 65-79, Fair 50-64, Pay attention <50; stress load Low <33, Moderate 33-65, High >=66. The Map plots 14-day rolling averages of daily stress and recovery minutes (not raw daily values). A fixed display offset is applied to the recovery axis so the trajectory registers against the level bands, as on Oura's map (whose recovery axis is normalized rather than raw minutes).",
+    },
     recommendations: [
       {
         priority: 1,

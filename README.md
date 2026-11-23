@@ -65,11 +65,55 @@ python3 generate_report.py \
 ### Install as a Muse App
 
 The report can also live as a private Muse app with a history of dated
-report snapshots. The complete app source is
-in [`app/`](app/), with install instructions in
+report snapshots. The app opens on an Oura-style Summary tab (score
+rings, vitals, a Stress & Recovery card, top actions), with detail tabs
+for Resilience, Comparison, Trends, Notes, and Actions. The complete
+app source is in [`app/`](app/), with install instructions in
 [`app/INSTALL.md`](app/INSTALL.md). The app template ships with sample
 seed data only — a real person's report values, CSVs, and generated
 reports must never be committed to this repository.
+
+### Estimated Resilience (in the app)
+
+The app's Resilience tab shows an **Estimated Resilience**: a
+transparent estimate computed by the user's own Muse from their own
+ring data. It is **not Oura's proprietary score** — Oura's algorithm is
+not public and its resilience API endpoint is not available on this
+connection, so the app computes and labels its own estimate instead.
+
+How it is computed (contributors over 14-day windows, as Oura labels
+them):
+
+- **Nighttime recovery** — 70% sleep component (sleep score, minus a
+  penalty per hour of sleep below 7h) + 30% physiology component scored
+  against the user's own prior-month baselines (HRV above/below the
+  baseline raises/lowers it; lowest resting heart rate above the
+  baseline lowers it).
+- **Daytime recovery** — average daily restorative (recovery) minutes,
+  scaled to 0–100.
+- **Daytime stress load** — average daily stress minutes, scaled to
+  0–100.
+
+The **level index** blends the three contributors (0.4 nighttime +
+0.3 daytime recovery + 0.3 × (100 − stress load)), combining the
+14-day value (40%) with a 28-day value (60%), because the level moves
+more slowly than the contributors. Levels: **Limited** <40,
+**Adequate** 40–54, **Solid** 55–64, **Strong** 65–79,
+**Exceptional** ≥80.
+
+The **Map** plots each day's 14-day rolling average of stress vs
+recovery minutes (not raw daily values) on fixed scales (stress
+0–360 min, recovery 0–240 min), with an axis cross and four curved
+dashed lines that mark the boundaries between the five levels,
+color-coded from Exceptional (green) to Limited (red). A fixed,
+disclosed display offset is applied to the recovery axis so the
+trajectory registers against the level bands, as on Oura's own map,
+whose recovery axis is normalized rather than raw minutes.
+
+The method was calibrated against official Resilience readings in the
+Oura app (level and contributor ratings compared at several dates) and
+is shown as small print in the app itself. Treat it as an estimate for
+personal trend-watching, not a medical measurement.
 
 ### For Beta Testers: Install the App in Your Own Muse — Safely
 
