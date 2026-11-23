@@ -3,8 +3,7 @@
 This folder is a complete Muse web app (TypeScript Space) that displays a
 person's Oura preventive health report — the same report `generate_report.py`
 renders as HTML — as a private, installable app with a history of dated
-report snapshots. It follows the same install pattern as the
-`verif_benefits` and `redeem_benefits` template apps.
+report snapshots.
 
 ## For the installing Muse — read this first
 
