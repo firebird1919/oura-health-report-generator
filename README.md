@@ -72,6 +72,68 @@ in [`app/`](app/), with install instructions in
 seed data only — a real person's report values, CSVs, and generated
 reports must never be committed to this repository.
 
+### For Beta Testers: Install the App in Your Own Muse — Safely
+
+You can run this report as a private app in your own Muse account.
+Your health data belongs to you alone: follow these steps exactly, and
+neither your data nor your credentials ever need to leave your own
+accounts.
+
+**What you need**
+
+- Your own Muse account, your own Oura Ring and Oura account.
+- Your own Oura developer application (next step) — never use someone
+  else's client ID/secret, and never share yours.
+
+**Install steps (ask your Muse to do them with you)**
+
+1. **Register your own Oura API application** at
+   https://cloud.ouraring.com/oauth/applications and set its redirect
+   URI to exactly `https://agent.meta.ai/api/hatch/oauth/callback`.
+   Keep your client secret in your password manager or Muse's secure
+   credential storage — never in the repo, a chat screenshot, or an
+   issue.
+2. **Connect Oura in your Muse** as a custom connector named
+   `custom.oura` (OAuth2; authorize host
+   `https://developer.ouraring.com/authorize`, token URL
+   `https://api.ouraring.com/oauth/token`, client auth
+   `client_secret_post`, scopes `daily heartrate spo2`). Authorize it
+   with **your** Oura account.
+3. **Build the app** from this repo's [`app/`](app/) folder, following
+   [`app/INSTALL.md`](app/INSTALL.md). Your Muse builds it verbatim
+   into your account; the app is private to you.
+4. **Pull your data and generate your report locally** with
+   `build_csvs.py` and `generate_report.py` (or use a CSV export from
+   your Oura Membership Hub), then have your Muse seed the app with
+   your report through its `seedSnapshot` / `addSnapshot` actions.
+5. **Check the app**: it should open on your latest report, with past
+   reports kept as dated snapshots.
+
+**Protect your health information — rules for beta testers**
+
+- **Never commit or push your data.** Your CSVs, generated HTML
+  reports, screenshots of your report, and any real `seed-data.ts`
+  must never be added to this or any public repository, issue, or pull
+  request. The repo `.gitignore` already blocks `*.csv`, `*.html`, and
+  `report_assets/` — do not remove those rules. Before any push, run
+  `git status` and read every file you are about to send.
+- **Keep your seeded app copy private.** If you fork this repo, your
+  fork's `app/server/src/seed-data.ts` must keep the sample data. Your
+  real seed lives only inside your Muse app, never in a repo.
+- **File bug reports with synthetic data only.** Use the sample seed or
+  the synthetic test generator; describe real-data problems in words,
+  without values, dates, or screenshots that reveal your metrics.
+- **Your Muse app is private to your account.** Do not publish, share,
+  or screenshot-share your app or its contents.
+- **You can disconnect at any time.** Revoke the app's access in your
+  Oura account settings, and delete the connector and the app in Muse
+  if you stop testing. Deleting the app deletes its stored snapshots.
+- **If you ever do push health data by mistake:** remove it
+  immediately, rewrite the repository history (or delete and recreate
+  the fork), and treat any exposed Oura credentials as compromised —
+  delete that Oura application and register a new one. Tell the
+  maintainer what happened.
+
 ### Common Input CSV Names
 
 - `dailyactivity.csv`
@@ -183,6 +245,43 @@ python3 generate_report.py \
 
 - `final_report.html`
 - `report_assets/`（圖表 SVG）
+
+### Beta 測試者：在自己的 Muse 安全安裝 App
+
+你也可以把這份報告安裝成自己 Muse 帳號裡的私人 App。請務必照以下
+步驟進行，你的健康資料與憑證不需要離開你自己的帳號：
+
+1. **註冊你自己的 Oura API 應用程式**：到
+   https://cloud.ouraring.com/oauth/applications 建立，redirect URI
+   必須正確設為 `https://agent.meta.ai/api/hatch/oauth/callback`。
+   Client secret 只存放在密碼管理器或 Muse 的安全憑證儲存中，絕不
+   放進 repo、聊天截圖或 issue，也不要使用別人的 ID/secret。
+2. **在你的 Muse 連接 Oura**：自訂連接器 `custom.oura`（OAuth2；
+   授權主機 `https://developer.ouraring.com/authorize`、token URL
+   `https://api.ouraring.com/oauth/token`、`client_secret_post`、
+   scopes `daily heartrate spo2`），並用你自己的 Oura 帳號授權。
+3. **建立 App**：請你的 Muse 依照 [`app/INSTALL.md`](app/INSTALL.md)
+   以本 repo 的 `app/` 資料夾原樣建立；App 僅屬於你的帳號、對外不公開。
+4. **在本機拉取資料並產生報告**（`build_csvs.py` +
+   `generate_report.py`，或使用 Oura Membership Hub 匯出的 CSV），
+   再由你的 Muse 透過 `seedSnapshot` / `addSnapshot` 把報告放入 App。
+5. **確認 App** 能開啟你最新的報告，過往報告以日期快照保存。
+
+保護健康資訊的規則：
+
+- **絕對不要 commit 或 push 你的資料**：CSV、產出的 HTML 報告、報告
+  截圖、真實的 `seed-data.ts`，都不得放進任何公開 repo、issue 或 PR。
+  本 repo 的 `.gitignore` 已封鎖 `*.csv`、`*.html` 與
+  `report_assets/`，請勿移除；每次 push 前先 `git status` 逐一檢查。
+- **Fork 的 seed 只能保留範例資料**；你的真實 seed 只存在於你的
+  Muse App 內，永遠不進 repo。
+- **回報 bug 只用合成資料**（範例 seed 或合成測試產生器）；描述真實
+  資料問題時只用文字，不要附數值、日期或能辨識你健康指標的截圖。
+- **隨時可以退出測試**：在 Oura 帳號設定撤銷授權，並在 Muse 刪除
+  連接器與 App（刪除 App 會一併刪除其中保存的快照）。
+- **若不慎 push 了健康資料**：立即移除並重寫 repo 歷史（或刪除重建
+  fork），已曝光的 Oura 憑證視為外洩——刪除該應用程式並重新註冊，
+  同時告知維護者。
 
 ### 常見輸入檔名
 
